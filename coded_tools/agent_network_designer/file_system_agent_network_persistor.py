@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
 # END COPYRIGHT
 
 # Import for asynchronous file operations
+import os
+
 import aiofiles
 
 from coded_tools.agent_network_designer.agent_network_assembler import AgentNetworkAssembler
@@ -28,13 +30,22 @@ class FileSystemAgentNetworkPersistor(AgentNetworkPersistor):
     as a hocon file. Also modifies the local manifest file.
     """
 
-    OUTPUT_PATH: str = "registries/"
+    OUTPUT_PATH: str = "registries"
+    GENERATED: str = "generated"
+
+    def __init__(self, demo_mode: bool):
+        """
+        Creates a new persistor of the specified type.
+
+        :param demo_mode: Whether to include demo mode instructions for agents
+        """
+        self.demo_mode: bool = demo_mode
 
     def get_assembler(self) -> AgentNetworkAssembler:
         """
         :return: An assembler instance associated with this persistor
         """
-        return HoconAgentNetworkAssembler()
+        return HoconAgentNetworkAssembler(self.demo_mode)
 
     async def async_persist(self, obj: str, file_reference: str = None) -> str:
         """
@@ -49,15 +60,27 @@ class FileSystemAgentNetworkPersistor(AgentNetworkPersistor):
         """
 
         the_agent_network_hocon_str: str = obj
+        # This agent network name already includes any subdirectory specified.
         the_agent_network_name: str = file_reference
 
         # Write the agent network file
-        file_path: str = self.OUTPUT_PATH + the_agent_network_name + ".hocon"
+        file_path: str = os.path.join(self.OUTPUT_PATH, the_agent_network_name + ".hocon")
+        # Create parent directory automatically if necessary
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
         async with aiofiles.open(file_path, "w") as file:
             await file.write(the_agent_network_hocon_str)
 
         # Update the manifest.hocon file
-        manifest_path: str = self.OUTPUT_PATH + "manifest.hocon"
+        manifest_path: str = os.path.join(self.OUTPUT_PATH, self.GENERATED, "manifest.hocon")
+
+        # Create the generated directory if it doesn't exist
+        os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+
+        # Create the manifest file if it doesn't exist
+        if not os.path.exists(manifest_path):
+            async with aiofiles.open(manifest_path, "w") as file:
+                # Initialize with empty JSON format
+                await file.write("{\n}")
 
         # Read the current manifest content
         async with aiofiles.open(manifest_path, "r") as file:

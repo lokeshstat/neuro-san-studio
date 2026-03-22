@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,21 +16,35 @@
 
 import logging
 from copy import deepcopy
+from os import environ
 from typing import Any
 
 from neuro_san.interfaces.coded_tool import CodedTool
+from neuro_san.internals.validation.network.keyword_network_validator import KeywordNetworkValidator
+from neuro_san.internals.validation.network.structure_network_validator import StructureNetworkValidator
+from neuro_san.internals.validation.network.toolbox_network_validator import ToolboxNetworkValidator
+from neuro_san.internals.validation.network.unreachable_nodes_network_validator import UnreachableNodesNetworkValidator
+from neuro_san.internals.validation.network.url_network_validator import UrlNetworkValidator
 
 from coded_tools.agent_network_designer.agent_network_assembler import AgentNetworkAssembler
 from coded_tools.agent_network_designer.agent_network_persistor import AgentNetworkPersistor
 from coded_tools.agent_network_designer.agent_network_persistor_factory import AgentNetworkPersistorFactory
-from coded_tools.agent_network_validator import AgentNetworkValidator
+from coded_tools.agent_network_designer.hocon_agent_network_assembler import HoconAgentNetworkAssembler
+from coded_tools.agent_network_editor.constants import AGENT_NETWORK_DEFINITION
+from coded_tools.agent_network_editor.constants import AGENT_NETWORK_HOCON_TEXT
+from coded_tools.agent_network_editor.constants import AGENT_NETWORK_NAME
+from coded_tools.agent_network_editor.get_mcp_tool import GetMcpTool
+from coded_tools.agent_network_editor.get_subnetwork import GetSubnetwork
+from coded_tools.agent_network_editor.get_toolbox import GetToolbox
 
-# To use reservations, turn this boolean to False and
+# To use reservations, turn this environment variable to true and also
 # export AGENT_TEMPORARY_NETWORK_UPDATE_PERIOD_SECONDS=5
-WRITE_TO_FILE: bool = True
+WRITE_TO_FILE: bool = environ.get("AGENT_NETWORK_DESIGNER_USE_RESERVATIONS", "false") != "true"
 
-AGENT_NETWORK_DEFINITION: str = "agent_network_definition"
-AGENT_NETWORK_NAME: str = "agent_network_name"
+# Turn this to False if the agents are grouped and don't need demo mode instructions
+DEMO_MODE: bool = True
+
+SUBDIRECTORY: str = "generated/"
 
 
 class PersistAgentNetwork(CodedTool):
@@ -44,6 +58,7 @@ class PersistAgentNetwork(CodedTool):
     - a list of down-chain agents (agents reporting to it)
     """
 
+    # pylint: disable=too-many-locals
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> str:
         """
         :param args: An argument dictionary whose keys are the parameters
@@ -81,30 +96,49 @@ class PersistAgentNetwork(CodedTool):
             return "Error: No network in sly data!"
 
         # Validate the agent network and return error message if there are any issues.
-        validator = AgentNetworkValidator(network_def)
+        # Gather all external agents (subnetworks) into a list.
+        subnetworks: list[str] = []
+        subnetworks_from_tool: dict[str, Any] | str = await GetSubnetwork().async_invoke(None, sly_data)
+        if isinstance(subnetworks_from_tool, dict):
+            subnetworks = list(subnetworks_from_tool.keys())
+
+        mcp_servers: list[str] = await GetMcpTool().get_mcp_servers(sly_data)
+        toolbox: dict[str, Any] | str = await GetToolbox().async_invoke(None, sly_data)
+
         error_list: list[str] = (
-            validator.validate_network_structure()
-            + validator.validate_network_keywords()
-            + validator.validate_toolbox_agents()
-            + validator.validate_url()
+            StructureNetworkValidator().validate(network_def)
+            + KeywordNetworkValidator().validate(network_def)
+            + ToolboxNetworkValidator(toolbox).validate(network_def)
+            + UrlNetworkValidator(subnetworks, mcp_servers).validate(network_def)
         )
         if error_list:
             error_msg = f"Error: {error_list}"
             logger.error(error_msg)
             return error_msg
 
+        # Get sample queries from args
+        sample_queries: list[str] = args.get("sample_queries")
+
         # Get the agent network name from sly data
         the_agent_network_name: str = sly_data.get(AGENT_NETWORK_NAME)
+        # Prepend subdirectory to the agent network name before persisting
+        # if not already present.
+        # This is needed for the NSflow launcher to connect to the right network.
+        if not the_agent_network_name.startswith(SUBDIRECTORY):
+            # Neuro-SAN only allows '/' as path separator in agent network names.
+            the_agent_network_name = SUBDIRECTORY + the_agent_network_name
+        sly_data[AGENT_NETWORK_NAME] = the_agent_network_name
 
         logger.info(">>>>>>>>>>>>>>>>>>>Create Agent Network>>>>>>>>>>>>>>>>>>")
         logger.info("Agent Network Name: %s", str(the_agent_network_name))
-
         # Get the persistor first, as that will determine how we want to assemble the agent network
-        persistor: AgentNetworkPersistor = AgentNetworkPersistorFactory.create_persistor(args, WRITE_TO_FILE)
+        persistor: AgentNetworkPersistor = AgentNetworkPersistorFactory.create_persistor(
+            args, WRITE_TO_FILE, DEMO_MODE, subnetworks, mcp_servers
+        )
         assembler: AgentNetworkAssembler = persistor.get_assembler()
-
-        persisted_content: str = assembler.assemble_agent_network(
-            validator.network, validator.get_top_agent(), the_agent_network_name
+        top_agent_name: str = UnreachableNodesNetworkValidator().find_all_top_agents(network_def).pop()
+        persisted_content: str = await assembler.assemble_agent_network(
+            network_def, top_agent_name, the_agent_network_name, sample_queries
         )
         logger.info("The resulting agent network: \n %s", str(persisted_content))
 
@@ -114,6 +148,16 @@ class PersistAgentNetwork(CodedTool):
 
         if isinstance(persisted_reference, list):
             sly_data["agent_reservations"] = persisted_reference
+
+        hocon_text: str = persisted_content
+        if not isinstance(assembler, HoconAgentNetworkAssembler):
+            # We don't yet have client-consumable HOCON content, so we need to re-assemble
+            # to send that back as a parting gift.
+            assembler = HoconAgentNetworkAssembler(DEMO_MODE)
+            hocon_text: str = await assembler.assemble_agent_network(
+                network_def, top_agent_name, the_agent_network_name, sample_queries
+            )
+        sly_data[AGENT_NETWORK_HOCON_TEXT] = hocon_text
 
         logger.info(">>>>>>>>>>>>>>>>>>>DONE !!!>>>>>>>>>>>>>>>>>>")
         return (

@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 """
 A2A server example
 See https://github.com/google/a2a-python/tree/main/examples
-and https://google.github.io/A2A/specification
+and https://a2a-protocol.org/latest/specification/
 
 Before running this server
  - `pip install a2a-sdk crewai`

@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,16 @@
 #
 # END COPYRIGHT
 {
+    # Optional metadata describing this agent network
+    "metadata": {
+        "description": "Agent network with a single agent, used as a 'Hello world!' example, that can answer questions about music and follow up. Keeps track of the number of questions answered using a running_cost variable in the sly data. Relies on a local LLM."
+        "tags": ["tool", "sly_data", "llm_config"]
+        "sample_queries": [
+            "Which band wrote Yellow Submarine?",
+            "Where are they from?",
+        ]
+    }
+
     "llm_config": {
         "model_name": "llama3.1",
     },
@@ -86,7 +96,7 @@ You are an API that updates the running cost of the MusicNerdPro service.
                     "required": []
                 }
             },
-            "class": "accounting.AccountantSly"
+            "class": "accountant.Accountant"
         },
     ]
 }

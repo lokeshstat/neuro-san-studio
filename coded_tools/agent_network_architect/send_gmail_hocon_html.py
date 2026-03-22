@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ from typing import List
 
 from neuro_san.interfaces.coded_tool import CodedTool
 
-from coded_tools.gmail_attachment import GmailAttachment
+from coded_tools.tools.gmail_attachment import GmailAttachment
 
 
 class SendGmailHoconHtml(CodedTool):

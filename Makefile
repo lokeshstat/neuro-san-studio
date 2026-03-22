@@ -1,11 +1,11 @@
 .PHONY: help venv install activate venv-guard lint lint-tests format format-tests
-SOURCES := run.py apps coded_tools
+SOURCES := run.py apps coded_tools plugins
 TESTS   := tests
 .DEFAULT_GOAL := help
 
-ISORT_FLAGS := --force-single-line
-ISORT_CHECK := --check-only --diff
-BLACK_CHECK := --check --diff
+RUFF_FORMAT_CHECK := --check --diff
+RUFF_LINT_CHECK := --output-format=full
+RUFF_IMPORTS_FIX := --select I --fix
 
 venv: # Set up a virtual environment in project
 	@if [ ! -d "venv" ]; then \
@@ -17,12 +17,21 @@ venv: # Set up a virtual environment in project
 	fi
 
 venv-guard: 
-	@if [ -z "$$VIRTUAL_ENV" ]; then \
-	  echo ""; \
-	  echo "Error: this task must run inside a Python virtual environment."; \
-	  echo "Activate it, e.g.  source venv/bin/activate"; \
-	  echo ""; \
-	  exit 1; \
+	@if [ -z "$$VIRTUAL_ENV" ] && [ -z "$$CONDA_DEFAULT_ENV" ] && \
+	  ! (pipenv --venv >/dev/null 2>&1) && ! (uv venv list >/dev/null 2>&1); then \
+		echo ""; \
+		echo "Error: This task must be run inside an active Python virtual environment."; \
+		echo "Detected: no venv, virtualenv, Poetry, Pipenv, Conda, or uv environment."; \
+		echo "Please activate one of the supported environments before continuing."; \
+		echo ""; \
+		echo "Examples:"; \
+		echo "  venv:       source venv/bin/activate"; \
+		echo "  Poetry:     poetry shell"; \
+		echo "  Pipenv:     pipenv shell"; \
+		echo "  Conda:      conda activate <env_name>"; \
+		echo "  uv:         source .venv/bin/activate"; \
+		echo ""; \
+		exit 1; \
 	fi
 
 install: venv ## Install all dependencies in the virtual environment
@@ -44,30 +53,28 @@ activate: ## Activate the venv
 	fi
 
 format-source: venv-guard
-	# Apply format changes from isort and black
-	isort $(SOURCES) $(ISORT_FLAGS)
-	black $(SOURCES)
+	# Apply format and import sorting via ruff
+	ruff check $(RUFF_IMPORTS_FIX) $(SOURCES)
+	ruff format $(SOURCES)
 
 format-tests: venv-guard
-	# Apply format changes from isort and black
-	isort $(TESTS) $(ISORT_FLAGS)
-	black $(TESTS)
+	# Apply format and import sorting via ruff
+	ruff check $(RUFF_IMPORTS_FIX) $(TESTS)
+	ruff format $(TESTS)
 
 format: format-source format-tests
 
 lint-check-source: venv-guard
-	# Run format checks and fail if isort or black need changes
-	isort $(SOURCES) $(ISORT_FLAGS) $(ISORT_CHECK)
-	black $(SOURCES) $(BLACK_CHECK)
-	flake8 $(SOURCES)
+	# Run format and lint checks via ruff, then pylint
+	ruff format $(SOURCES) $(RUFF_FORMAT_CHECK)
+	ruff check $(SOURCES) $(RUFF_LINT_CHECK)
 	pylint $(SOURCES)/
 	pymarkdown --config ./.pymarkdownlint.yaml scan ./docs ./README.md
 
 lint-check-tests: venv-guard
-	# Run format checks and fail if isort or black need changes
-	isort $(TESTS) $(ISORT_FLAGS) $(ISORT_CHECK)
-	black $(TESTS) $(BLACK_CHECK)
-	flake8 $(TESTS)
+	# Run format and lint checks via ruff, then pylint
+	ruff format $(TESTS) $(RUFF_FORMAT_CHECK)
+	ruff check $(TESTS) $(RUFF_LINT_CHECK)
 	pylint $(TESTS)
 
 lint-check: lint-check-source lint-check-tests
@@ -75,7 +82,15 @@ lint-check: lint-check-source lint-check-tests
 lint: format lint-check
 
 test: lint ## Run tests with coverage
-	python -m pytest tests/ -v --cov=coded_tools,run.py
+	python -m pytest tests/ -v --cov=coded_tools,run.py -m "not integration"
+
+test-integration: install
+	@. venv/bin/activate && \
+	export PYTHONPATH=`pwd` && \
+	export AGENT_TOOL_PATH=coded_tools/ && \
+	export AGENT_MANIFEST_FILE=registries/manifest.hocon && \
+	export AGENT_TEMPORARY_NETWORK_UPDATE_PERIOD_SECONDS=5 && \
+	pytest -s -m "integration" --timer-top-n 100
 
 help: ## Show this help message and exit
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \

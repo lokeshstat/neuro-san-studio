@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -88,7 +88,7 @@ class OpenAITool:
             # Invoke with the provided query and tool,
             # "tool_choice" is set to "required" to force the model to use tool.
             result: AIMessage = await openai_llm.ainvoke(query, tools=[tool], tool_choice="required")
-            content: list[dict[str, Any]] = result.content
+            content: list[dict[str, Any]] = result.content_blocks
             OpenAITool.logger.info("Result from OpenAI Tool: %s", content)
             return content
 

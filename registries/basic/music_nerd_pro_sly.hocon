@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,9 +14,17 @@
 #
 # END COPYRIGHT
 {
+    # Optional metadata describing this agent network
+    "metadata": {
+        "description": "Agent network with a single agent, used as a 'Hello world!' example, that can answer questions about music and follow up. Keeps track of the number of questions answered using a running_cost variable in the sly data"
+        "tags": ["tool", "sly_data"]
+        "sample_queries": [
+            "Which band wrote Yellow Submarine?",
+            "Where are they from?",
+        ]
+    },    
     "llm_config": {
-        "model_name": "gpt-4o",
-        # "model_name": "claude-3-5-haiku",
+        "model_name": "gpt-5.2"
     },
     "tools": [
         # This first agent definition is regarded as the "Front Man", which
@@ -67,27 +75,19 @@ Then answer with a JSON message that has two keys:
                     }
                 }
             },
-            "tools": ["Accountant"]
+            "tools": ["Accountant"],
+
+            # Parse any JSON in responses into the structure field of the ChatMessage.
+            "structure_formats": "json"
         },
         {
             "name": "Accountant",
             "function": {
                 "description": """
 You are an API that updates the running cost of the MusicNerdPro service.
-                """,
-                "parameters": {
-                    # No parameters are needed for this function.
-                    "type": "object",
-                    "properties": {
-                        "type_of_work": {
-                            "type": "string",
-                            "description": "The type of work that's being done. E.g. 'answering a question', 'searching for information', etc."
-                        },
-                    },
-                    "required": []
-                }
+                """
             },
-            "class": "accounting.AccountantSly"
+            "class": "accountant.Accountant"
         },
     ]
 }

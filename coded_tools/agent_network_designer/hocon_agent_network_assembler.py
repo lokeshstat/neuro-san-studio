@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
 #
 # END COPYRIGHT
 
+import datetime
+from copy import copy as shallow_copy
 from typing import Any
 
 from coded_tools.agent_network_designer.agent_network_assembler import AgentNetworkAssembler
@@ -33,9 +35,21 @@ HOCON_HEADER_START = (
     "# The path to this substitution file is **relative to the top-level directory**,\n"
     "# so running the script from elsewhere may result in file not found errors.\n"
     '    include "registries/aaosa.hocon"\n'
-    '    "llm_config": {\n'
-    '        "model_name": "gpt-4o",\n'
+    "\n"
+    "# Optional metadata describing this agent network\n"
+    '    "metadata": {\n'
+    '        "sample_queries": [\n'
+    "            %s\n"
+    "        ],\n"
+    '        "date_created": "%s"\n'
     "    },\n"
+    "\n"
+    "# Load the shared LLM configuration from a single source of truth.\n"
+    "# This allows users to change the model in one file rather than\n"
+    "# modifying the configuration for each agent network.\n"
+    "# Note that the file path here is relative to the root level of the repo.\n"
+    '    include "registries/llm_config.hocon",\n'
+    "\n"
     '   "instructions_prefix": """\n'
     "You are part of a team of assistants in "
 )
@@ -45,8 +59,7 @@ HOCON_HEADER_REMAINDER = (
     "Do not try to help for other matters.\n"
     "Do not mention what you can NOT do. Only mention what you can do.\n"
     '""",\n'
-    '   "demo_mode": "You are part of a demo system, so when queried, make up a realistic response as if you '
-    'are actually grounded in real data or you are operating a real application API or microservice."\n'
+    "%s"
     '   "tools": [\n'
 )
 TOP_AGENT_TEMPLATE = (
@@ -81,13 +94,15 @@ LEAF_NODE_AGENT_TEMPLATE = (
     "        {\n"
     '            "name": "%s",\n'
     '            "function": ${aaosa_call},\n'
-    '            "instructions": ${instructions_prefix} ${demo_mode} """\n'
+    '            "instructions": ${instructions_prefix} %s """\n'
     "%s\n"
     '""",\n'
     "        },\n"
 )
+# fmt: off
 # pylint: disable=implicit-str-concat
 TOOLBOX_AGENT_TEMPLATE = "        {\n" '            "name": "%s",\n' '            "toolbox": "%s"\n' "        },\n"
+# fmt: on
 
 
 # pylint: disable=too-few-public-methods
@@ -102,54 +117,123 @@ class HoconAgentNetworkAssembler(AgentNetworkAssembler):
     - a list of down-chain agents (agents reporting to it)
     """
 
-    def assemble_agent_network(self, network_def: dict[str, Any], top_agent_name: str, agent_network_name: str) -> str:
+    def __init__(self, demo_mode: bool):
+        """
+        Constructor
+
+        :param demo_mode: Whether to include demo mode instructions for agents
+        """
+        self.demo_mode: bool = demo_mode
+
+    async def assemble_agent_network(
+        self, network_def: dict[str, Any], top_agent_name: str, agent_network_name: str, sample_queries: list[str]
+    ) -> str:
         """
         Substitutes value from agent network definition into the template of agent network HOCON file
 
         :param network_def: Agent network definition
         :param top_agent_name: The name of the top agent
         :param agent_network_name: The file name, without the .hocon extension
+        :param sample_queries: List of sample queries for the agent network
 
         :return: A full agent network HOCON as a string.
         """
-        # Move top agent to front
+        use_network_def = shallow_copy(network_def)
+        use_network_def = self._move_top_agent_first(use_network_def, top_agent_name)
+
+        header = self._build_header(agent_network_name, sample_queries)
+
+        body = []
+        for agent_name, agent in use_network_def.items():
+            body.append(self._render_agent_block(agent_name, agent, top_agent_name))
+
+        return header + "".join(body) + "]\n}\n"
+
+    def _move_top_agent_first(self, network_def: dict[str, Any], top_agent_name: str) -> dict[str, Any]:
+        """
+        Ensure the top agent is the first item in the ordered dict.
+
+        :param network_def: Agent network definition
+        :param top_agent_name: The name of the top agent
+
+        :return: Updated network definition with top agent first.
+        """
         if top_agent_name != next(iter(network_def)):
-            top_agent: dict[str, Any] = network_def.pop(top_agent_name)
-            network_def = {top_agent_name: top_agent, **network_def}
+            top_agent = network_def.pop(top_agent_name)
+            return {top_agent_name: top_agent, **network_def}
+        return network_def
 
-        agent_network_hocon: str = HOCON_HEADER_START + agent_network_name + HOCON_HEADER_REMAINDER
+    def _format_sample_queries(self, sample_queries: list[str]) -> str:
+        """
+        Format sample queries as HOCON list elements.
 
-        for agent_name, agent in network_def.items():
-            tools = ""
-            if agent.get("tools"):
-                for j, down_chain in enumerate(agent["tools"]):
-                    tools = tools + '"' + down_chain + '"'
-                    if j < len(agent["tools"]) - 1:
-                        tools = tools + ","
+        :param sample_queries: List of sample queries for the agent network
 
-            if agent_name == top_agent_name:  # top agent
-                an_agent = TOP_AGENT_TEMPLATE % (
-                    agent_name,
-                    agent["instructions"],
-                    tools,
-                )
-            elif agent.get("tools"):
-                an_agent = REGULAR_AGENT_TEMPLATE % (
-                    agent_name,
-                    agent["instructions"],
-                    tools,
-                )
-            elif agent.get("instructions"):  # leaf node agent
-                an_agent = LEAF_NODE_AGENT_TEMPLATE % (
-                    agent_name,
-                    agent["instructions"],
-                )
-            else:
-                an_agent = TOOLBOX_AGENT_TEMPLATE % (
-                    agent_name,
-                    agent_name,  # toolbox name is the same as agent name
-                )
-            agent_network_hocon += an_agent
+        :return: Formatted sample queries as a string.
+        """
+        formatted_queries = ""
+        if sample_queries:
+            parts = []
+            for query in sample_queries:
+                parts.append(f'"{query.replace('"', "")}"')
+            formatted_queries = ",\n            ".join(parts)
+        return formatted_queries
 
-        agent_network_hocon += "]\n}\n"
-        return agent_network_hocon
+    def _build_header(self, agent_network_name: str, sample_queries: list[str]) -> str:
+        """
+        Build the header of the HOCON agent network file.
+
+        :param agent_network_name: The file name, without the .hocon extension
+        :param sample_queries: List of sample queries for the agent network
+
+        :return: The header of the HOCON agent network file as a string.
+        """
+        formatted_queries = self._format_sample_queries(sample_queries)
+        date_created = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+        demo_mode_block = (
+            '   "demo_mode": "You are part of a demo system, so when queried, make up a realistic '
+            "response as if you are actually grounded in real data or you are operating a real "
+            'application API or microservice.",\n'
+            if self.demo_mode
+            else ""
+        )
+
+        return (
+            HOCON_HEADER_START % (formatted_queries, date_created)
+            + agent_network_name
+            + HOCON_HEADER_REMAINDER % demo_mode_block
+        )
+
+    def _render_agent_block(self, agent_name: str, agent: dict[str, Any], top_agent_name: str) -> str:
+        """
+        Render a single agent block depending on its type.
+
+        :param agent_name: The name of the agent
+        :param agent: The agent definition
+        :param top_agent_name: The name of the top agent
+
+        :return: The rendered agent block as a string.
+        """
+        tools = self._format_tools(agent.get("tools", []))
+
+        if agent_name == top_agent_name:
+            return TOP_AGENT_TEMPLATE % (agent_name, agent["instructions"], tools)
+
+        if agent.get("tools"):
+            return REGULAR_AGENT_TEMPLATE % (agent_name, agent["instructions"], tools)
+
+        if agent.get("instructions"):
+            demo_prefix = "${demo_mode}" if self.demo_mode else ""
+            return LEAF_NODE_AGENT_TEMPLATE % (agent_name, demo_prefix, agent["instructions"])
+
+        return TOOLBOX_AGENT_TEMPLATE % (agent_name, agent_name)
+
+    def _format_tools(self, tools: list[str]) -> str:
+        """
+        Format a list of tool names into a HOCON array string.
+
+        :param tools: List of tool names
+
+        :return: Formatted tools as a string.
+        """
+        return ", ".join(f'"{t}"' for t in tools)

@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,15 +14,18 @@
 #
 # END COPYRIGHT
 
-import asyncio
 import logging
 from typing import Any
 
 from neuro_san.interfaces.coded_tool import CodedTool
+from neuro_san.internals.validation.network.structure_network_validator import StructureNetworkValidator
+from neuro_san.internals.validation.network.toolbox_network_validator import ToolboxNetworkValidator
+from neuro_san.internals.validation.network.url_network_validator import UrlNetworkValidator
 
-from coded_tools.agent_network_validator import AgentNetworkValidator
-
-AGENT_NETWORK_DEFINITION = "agent_network_definition"
+from coded_tools.agent_network_editor.constants import AGENT_NETWORK_DEFINITION
+from coded_tools.agent_network_editor.get_mcp_tool import GetMcpTool
+from coded_tools.agent_network_editor.get_subnetwork import GetSubnetwork
+from coded_tools.agent_network_editor.get_toolbox import GetToolbox
 
 
 class ValidateStructure(CodedTool):
@@ -31,7 +34,7 @@ class ValidateStructure(CodedTool):
     to ensure it adheres to the defined rules and constraints.
     """
 
-    def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> str:
+    async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         """
         :param args: An argument dictionary whose keys are the parameters
                 to the coded tool and whose values are the values passed for them
@@ -68,9 +71,21 @@ class ValidateStructure(CodedTool):
 
         logger.info(">>>>>>>>>>>>>>>>>>>Validate Agent Network Structure>>>>>>>>>>>>>>>>>>")
         # Validate the agent network and return error message if there are any issues.
-        validator = AgentNetworkValidator(network_def)
+
+        # Get a dict of tools or error message if no toolbox found.
+        tools: dict[str, Any] | str = await GetToolbox().async_invoke(None, sly_data)
+        # Gather all URLs from MCP servers and subnetworks.
+        subnetworks: dict[str, Any] | str = await GetSubnetwork().async_invoke(None, sly_data)
+        if isinstance(subnetworks, dict):
+            subnetworks: list[str] = list(subnetworks.keys())
+        else:
+            subnetworks = []
+        mcp_servers: list[str] = await GetMcpTool().get_mcp_servers(sly_data)
+
         error_list: list[str] = (
-            validator.validate_network_structure() + validator.validate_toolbox_agents() + validator.validate_url()
+            StructureNetworkValidator().validate(network_def)
+            + ToolboxNetworkValidator(tools).validate(network_def)
+            + UrlNetworkValidator(subnetworks, mcp_servers).validate(network_def)
         )
         if error_list:
             error_msg = f"Error: {error_list}"
@@ -80,7 +95,3 @@ class ValidateStructure(CodedTool):
         success_msg = "No structure error found in the agent network."
         logger.info(success_msg)
         return success_msg
-
-    async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
-        """Run invoke asynchronously."""
-        return await asyncio.to_thread(self.invoke, args, sly_data)

@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,13 +23,16 @@ class AgentNetworkAssembler:
     Interface for a policy class that assembles an agent network from an agent network definition
     """
 
-    def assemble_agent_network(self, network_def: dict[str, Any], top_agent_name: str, agent_network_name: str) -> Any:
+    async def assemble_agent_network(
+        self, network_def: dict[str, Any], top_agent_name: str, agent_network_name: str, sample_queries: list[str]
+    ) -> Any:
         """
         Assemble the agent network from the definition.
 
         :param network_def: Agent network definition
         :param top_agent_name: The name of the top agent
         :param agent_network_name: The file name, without the .hocon extension
+        :param sample_queries: List of sample queries for the agent network
 
         :return: Some representation of the agent network
         """

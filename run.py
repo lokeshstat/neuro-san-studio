@@ -28,6 +28,9 @@ from typing import Dict
 from typing import Tuple
 
 from dotenv import load_dotenv
+from plugins.env_validator.env_validator import EnvValidator
+from plugins.log_bridge.process_log_bridge import ProcessLogBridge
+from plugins.phoenix.phoenix_plugin import PhoenixPlugin
 
 
 class NeuroSanRunner:
@@ -49,19 +52,20 @@ class NeuroSanRunner:
         # Default Configuration
         self.args: Dict[str, Any] = {
             "server_host": os.getenv("NEURO_SAN_SERVER_HOST", "localhost"),
-            "server_grpc_port": int(os.getenv("NEURO_SAN_SERVER_GRPC_PORT", "30011")),
             "server_http_port": int(os.getenv("NEURO_SAN_SERVER_HTTP_PORT", "8080")),
             "server_connection": str(os.getenv("NEURO_SAN_SERVER_CONNECTION", "http")),
             "manifest_update_period_seconds": int(os.getenv("AGENT_MANIFEST_UPDATE_PERIOD_SECONDS", "5")),
             "default_sly_data": str(os.getenv("DEFAULT_SLY_DATA", "")),
             "nsflow_host": os.getenv("NSFLOW_HOST", "localhost"),
             "nsflow_port": int(os.getenv("NSFLOW_PORT", "4173")),
-            "nsflow_log_level": os.getenv("NSFLOW_LOG_LEVEL", "info"),
+            "nsflow_plugin_cruse": os.getenv("NSFLOW_PLUGIN_CRUSE", "false"),
+            "log_level": os.getenv("LOG_LEVEL", "info"),
             "vite_api_protocol": os.getenv("VITE_API_PROTOCOL", "http"),
             "vite_ws_protocol": os.getenv("VITE_WS_PROTOCOL", "ws"),
             "neuro_san_web_client_port": int(os.getenv("NEURO_SAN_WEB_CLIENT_PORT", "5003")),
             "thinking_file": os.getenv("THINKING_FILE", self.thinking_file),
             "thinking_dir": os.getenv("THINKING_DIR", self.thinking_dir),
+            "logbridge_enabled": os.getenv("LOGBRIDGE_ENABLED", "true"),
             # Ensure all paths are resolved relative to `self.root_dir`
             "agent_manifest_file": os.getenv(
                 "AGENT_MANIFEST_FILE", os.path.join(self.root_dir, "registries", "manifest.hocon")
@@ -70,22 +74,14 @@ class NeuroSanRunner:
             "agent_toolbox_info_file": os.getenv(
                 "AGENT_TOOLBOX_INFO_FILE", os.path.join(self.root_dir, "toolbox", "toolbox_info.hocon")
             ),
-            "logs_dir": self.logs_dir,
-            # Phoenix / OpenTelemetry defaults
-            "phoenix_enabled": os.getenv("PHOENIX_ENABLED", "false"),
-            "otel_service_name": os.getenv("OTEL_SERVICE_NAME", "neuro-san-demos"),
-            "otel_service_version": os.getenv("OTEL_SERVICE_VERSION", "dev"),
-            "otel_exporter_otlp_traces_endpoint": os.getenv(
-                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-                os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:6006/v1/traces"),
+            "mcp_servers_info_file": os.getenv(
+                "MCP_SERVERS_INFO_FILE", os.path.join(self.root_dir, "mcp", "mcp_info.hocon")
             ),
-            # Phoenix UI/collector configuration
-            "phoenix_host": os.getenv("PHOENIX_HOST", "127.0.0.1"),
-            "phoenix_port": int(os.getenv("PHOENIX_PORT", "6006")),
-            "phoenix_autostart": os.getenv("PHOENIX_AUTOSTART", "false"),
-            "phoenix_project_name": os.getenv("PHOENIX_PROJECT_NAME", "default"),
-            "phoenix_otel_register": os.getenv("PHOENIX_OTEL_REGISTER", "true"),
+            "logs_dir": self.logs_dir,
         }
+
+        # Add Phoenix configuration defaults
+        self.args.update(PhoenixPlugin.get_default_config())
 
         # Ensure logs directory exists
         os.makedirs(self.logs_dir, exist_ok=True)
@@ -94,11 +90,18 @@ class NeuroSanRunner:
         # Parse command-line arguments
         self.args.update(self.parse_args())
 
+        if self.args.get("logbridge_enabled"):
+            self.log_bridge = ProcessLogBridge(
+                level=self.args.get("log_level", "info"),
+                runner_log_file=os.path.join(self.args["logs_dir"], "runner.log"),
+            )
         # Process references
         self.server_process = None
         self.flask_webclient_process = None
         self.nsflow_process = None
-        self.phoenix_process = None
+
+        # Instantiate Phoenix plugin
+        self.phoenix_plugin = PhoenixPlugin(self.args)
 
     def load_env_variables(self):
         """Load .env file from project root and set variables."""
@@ -120,12 +123,6 @@ class NeuroSanRunner:
             "--server-host", type=str, default=self.args["server_host"], help="Host address for the Neuro SAN server"
         )
         parser.add_argument(
-            "--server-grpc-port",
-            type=int,
-            default=self.args["server_grpc_port"],
-            help="Port number for the Neuro SAN server grpc endpoint",
-        )
-        parser.add_argument(
             "--server-http-port",
             type=int,
             default=self.args["server_http_port"],
@@ -144,6 +141,9 @@ class NeuroSanRunner:
             help="Port number for the web client",
         )
         parser.add_argument(
+            "--log-level", type=str, default=self.args["log_level"], help="Log level for all processes"
+        )
+        parser.add_argument(
             "--thinking-file", type=str, default=self.args["thinking_file"], help="Path to the agent thinking file"
         )
         parser.add_argument("--no-html", action="store_true", help="Don't generate html for network diagrams")
@@ -155,6 +155,18 @@ class NeuroSanRunner:
         )
         parser.add_argument(
             "--use-flask-web-client", action="store_true", help="Use the flask based neuro-san-web-client"
+        )
+        parser.add_argument(
+            "--validate-keys",
+            type=int,
+            nargs="?",
+            const=3,
+            default=None,
+            metavar="{1,2,3}",
+            help="Validate API keys up to the specified tier: "
+            "1=placeholder detection, 2=format validation, "
+            "3=live API calls (default when flag is passed without a value). "
+            "Omit to skip validation entirely.",
         )
 
         args, _ = parser.parse_known_args()
@@ -173,7 +185,7 @@ class NeuroSanRunner:
 
         return vars(args)
 
-    def set_environment_variables(self):  # pylint: disable=too-many-statements
+    def set_environment_variables(self):
         """Set required environment variables, optionally using neuro-san defaults."""
         print("\n" + "=" * 50 + "\n")
         print("Setting environment variables...\n")
@@ -182,29 +194,21 @@ class NeuroSanRunner:
         os.environ["AGENT_MANIFEST_FILE"] = self.args["agent_manifest_file"]
         os.environ["AGENT_TOOL_PATH"] = self.args["agent_tool_path"]
         os.environ["AGENT_TOOLBOX_INFO_FILE"] = self.args["agent_toolbox_info_file"]
+        os.environ["MCP_SERVERS_INFO_FILE"] = self.args["mcp_servers_info_file"]
         os.environ["NEURO_SAN_SERVER_CONNECTION"] = self.args["server_connection"]
         os.environ["AGENT_MANIFEST_UPDATE_PERIOD_SECONDS"] = str(self.args["manifest_update_period_seconds"])
+        os.environ["LOG_LEVEL"] = self.args["log_level"]
         print(f"PYTHONPATH set to: {os.environ['PYTHONPATH']}")
         print(f"AGENT_MANIFEST_FILE set to: {os.environ['AGENT_MANIFEST_FILE']}")
         print(f"AGENT_TOOL_PATH set to: {os.environ['AGENT_TOOL_PATH']}")
         print(f"AGENT_TOOLBOX_INFO_FILE set to: {os.environ['AGENT_TOOLBOX_INFO_FILE']}")
+        print(f"MCP_SERVERS_INFO_FILE set to: {os.environ['MCP_SERVERS_INFO_FILE']}")
         print(f"NEURO_SAN_SERVER_CONNECTION set to: {os.environ['NEURO_SAN_SERVER_CONNECTION']}")
-        print(f"AGENT_MANIFEST_UPDATE_PERIOD_SECONDS set to: {os.environ['AGENT_MANIFEST_UPDATE_PERIOD_SECONDS']}\n")
+        print(f"AGENT_MANIFEST_UPDATE_PERIOD_SECONDS set to: {os.environ['AGENT_MANIFEST_UPDATE_PERIOD_SECONDS']}")
+        print(f"LOG_LEVEL set to: {os.environ['LOG_LEVEL']}\n")
 
-        # Phoenix / OpenTelemetry envs
-        os.environ["PHOENIX_ENABLED"] = str(self.args["phoenix_enabled"]).lower()
-        os.environ["OTEL_SERVICE_NAME"] = self.args["otel_service_name"]
-        os.environ["OTEL_SERVICE_VERSION"] = self.args["otel_service_version"]
-        os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = self.args["otel_exporter_otlp_traces_endpoint"]
-        print(f"PHOENIX_ENABLED set to: {os.environ['PHOENIX_ENABLED']}")
-        print(f"OTEL_SERVICE_NAME set to: {os.environ['OTEL_SERVICE_NAME']}")
-        print(f"OTEL_SERVICE_VERSION set to: {os.environ['OTEL_SERVICE_VERSION']}")
-        print(f"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT set to: {os.environ['OTEL_EXPORTER_OTLP_TRACES_ENDPOINT']}\n")
-        # Phoenix register settings
-        os.environ["PHOENIX_PROJECT_NAME"] = str(self.args["phoenix_project_name"])
-        os.environ["PHOENIX_OTEL_REGISTER"] = str(self.args["phoenix_otel_register"]).lower()
-        print(f"PHOENIX_PROJECT_NAME set to: {os.environ['PHOENIX_PROJECT_NAME']}")
-        print(f"PHOENIX_OTEL_REGISTER set to: {os.environ['PHOENIX_OTEL_REGISTER']}\n")
+        # Phoenix / OpenTelemetry envs - delegate to PhoenixPlugin
+        self.phoenix_plugin.set_environment_variables()
 
         # Client-only env variables
         if not self.args["server_only"]:
@@ -216,10 +220,14 @@ class NeuroSanRunner:
                 os.environ["NEURO_SAN_WEB_CLIENT_PORT"] = str(self.args["web_client_port"])
                 print(f"NEURO_SAN_WEB_CLIENT_PORT set to: {os.environ['NEURO_SAN_WEB_CLIENT_PORT']}")
             else:
+                os.environ["NSFLOW_HOST"] = str(self.args["nsflow_host"])
                 os.environ["NSFLOW_PORT"] = str(self.args["nsflow_port"])
+                os.environ["NSFLOW_PLUGIN_CRUSE"] = str(self.args["nsflow_plugin_cruse"])
                 os.environ["VITE_API_PROTOCOL"] = str(self.args["vite_api_protocol"])
                 os.environ["VITE_WS_PROTOCOL"] = str(self.args["vite_ws_protocol"])
+                print(f"NSFLOW_HOST set to: {os.environ['NSFLOW_HOST']}")
                 print(f"NSFLOW_PORT set to: {os.environ['NSFLOW_PORT']}")
+                print(f"NSFLOW_PLUGIN_CRUSE set to: {os.environ['NSFLOW_PLUGIN_CRUSE']}")
                 print(f"VITE_API_PROTOCOL set to: {os.environ['VITE_API_PROTOCOL']}")
                 print(f"VITE_WS_PROTOCOL set to: {os.environ['VITE_WS_PROTOCOL']}")
                 # Set env variable for using nsflow in client-only mode
@@ -230,14 +238,36 @@ class NeuroSanRunner:
         # Server-only env variables
         if not self.args["client_only"]:
             os.environ["NEURO_SAN_SERVER_HOST"] = self.args["server_host"]
-            os.environ["NEURO_SAN_SERVER_GRPC_PORT"] = str(self.args["server_grpc_port"])
             os.environ["NEURO_SAN_SERVER_HTTP_PORT"] = str(self.args["server_http_port"])
 
             print(f"NEURO_SAN_SERVER_HOST set to: {os.environ['NEURO_SAN_SERVER_HOST']}")
-            print(f"NEURO_SAN_SERVER_GRPC_PORT set to: {os.environ['NEURO_SAN_SERVER_GRPC_PORT']}\n")
             print(f"NEURO_SAN_SERVER_HTTP_PORT set to: {os.environ['NEURO_SAN_SERVER_HTTP_PORT']}\n")
 
         print("\n" + "=" * 50 + "\n")
+
+    def validate_keys(self):
+        """Validate LLM API keys when --validate-keys is specified."""
+        tier = self.args.get("validate_keys")
+        if not tier:
+            return
+
+        print(f"Validating LLM API keys (tier {tier})...")
+
+        if tier >= 3:
+            print("Live validation enabled - making API calls to verify keys...")
+
+        validator = EnvValidator()
+        results = validator.validate_all(tier=tier)
+        validator.print_results(results)
+
+        # Warn but don't block startup for missing/placeholder keys
+        if validator.has_warnings(results):
+            print("Note: Some API keys are not configured. Agents using those providers will fail.")
+            print("      Configure them in your .env file to enable all features.\n")
+
+        # For actual errors (invalid format, invalid key), warn more strongly
+        if validator.has_errors(results):
+            print("Error: Some API keys have validation errors. Check the results above.\n")
 
     @staticmethod
     def generate_html_files():
@@ -297,55 +327,21 @@ class NeuroSanRunner:
 
         print(f"Started {process_name} with PID {process.pid}")
 
-        # Start streaming logs in separate threads
-        stdout_thread = threading.Thread(target=self.stream_output, args=(process.stdout, log_file, process_name))
-        stderr_thread = threading.Thread(target=self.stream_output, args=(process.stderr, log_file, process_name))
-        stdout_thread.start()
-        stderr_thread.start()
+        if self.args.get("logbridge_enabled"):
+            # Let log_bridge own reading/parsing/printing/writing
+            self.log_bridge.attach_process_logger(process, process_name, log_file)
+        else:
+            # Start streaming logs in separate threads
+            stdout_thread = threading.Thread(target=self.stream_output, args=(process.stdout, log_file, process_name))
+            stderr_thread = threading.Thread(target=self.stream_output, args=(process.stderr, log_file, process_name))
+            stdout_thread.start()
+            stderr_thread.start()
 
         return process
 
     def start_phoenix(self):
         """Start Phoenix server (UI + OTLP HTTP collector) if enabled."""
-        if str(self.args["phoenix_autostart"]).lower() not in ("true", "1", "yes", "on"):
-            return
-        if str(self.args["phoenix_enabled"]).lower() not in ("true", "1", "yes", "on"):
-            return
-
-        print("Starting Phoenix (AI observability)...")
-        # If something is already listening on PHOENIX_PORT, assume Phoenix is running and skip autostart
-        if self.is_port_open(self.args["phoenix_host"], self.args["phoenix_port"]):
-            phoenix_url = f"http://{self.args['phoenix_host']}:{self.args['phoenix_port']}"
-            print(f"Phoenix detected at {phoenix_url} — skipping autostart.")
-        else:
-            # Disable gRPC on Windows (port binding issues)
-            os.environ["PHOENIX_GRPC_PORT"] = "0"
-
-            # Use python -m form for better compatibility
-            try:
-                self.phoenix_process = self.start_process(
-                    [sys.executable, "-m", "phoenix.server.main", "serve"], "Phoenix", "logs/phoenix.log"
-                )
-                # Wait for Phoenix to bind to port (with retry)
-                phoenix_ready = False
-                for _ in range(10):  # Try for up to 10 seconds
-                    time.sleep(1)
-                    if self.is_port_open(self.args["phoenix_host"], self.args["phoenix_port"]):
-                        phoenix_ready = True
-                        break
-
-                if phoenix_ready:
-                    print("Phoenix started successfully.")
-                else:
-                    print("Failed to start Phoenix automatically. Check logs/phoenix.log")
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                print(f"Failed to start Phoenix automatically: {e}")
-
-        # Update OTLP endpoint env to point to this phoenix instance if not explicitly overridden
-        default_otlp = f"http://{self.args['phoenix_host']}:{self.args['phoenix_port']}/v1/traces"
-        if os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") in (None, "", "http://localhost:6006/v1/traces"):
-            os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = default_otlp
-            print(f"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT updated to: {default_otlp}")
+        self.phoenix_plugin.start_phoenix_server()
 
     def start_neuro_san(self):
         """Start the Neuro SAN server."""
@@ -354,14 +350,11 @@ class NeuroSanRunner:
             sys.executable,
             "-u",
             "-m",
-            "neuro_san.service.main_loop.server_main_loop",
-            "--port",
-            str(self.args["server_grpc_port"]),
+            "servers.neuro_san.neuro_san_server_wrapper",
             "--http_port",
             str(self.args["server_http_port"]),
         ]
         self.server_process = self.start_process(command, "NeuroSan", "logs/server.log")
-        print("NeuroSan server grpc started on port: ", self.args["server_grpc_port"])
         print("NeuroSan server http started on port: ", self.args["server_http_port"])
 
     def start_nsflow(self):
@@ -373,13 +366,15 @@ class NeuroSanRunner:
             "-m",
             "uvicorn",
             "nsflow.backend.main:app",
+            "--host",
+            str(self.args["nsflow_host"]),
             "--port",
             str(self.args["nsflow_port"]),
             "--reload",
         ]
 
         self.nsflow_process = self.start_process(command, "nsflow", "logs/nsflow.log")
-        print("nsflow client started on port: ", self.args["nsflow_port"])
+        print(f"nsflow client started on {self.args['nsflow_host']}:{self.args['nsflow_port']}")
 
     def start_flask_web_client(self):
         """Start the Flask web client."""
@@ -392,7 +387,7 @@ class NeuroSanRunner:
             "--server-host",
             self.args["server_host"],
             "--server-port",
-            str(self.args["server_grpc_port"]),
+            str(self.args["server_http_port"]),
             "--web-client-port",
             str(self.args["web_client_port"]),
             "--thinking-file",
@@ -411,7 +406,9 @@ class NeuroSanRunner:
             if self.is_windows:
                 self.server_process.terminate()
             else:
-                os.killpg(os.getpgid(self.server_process.pid), signal.SIGKILL)
+                os.killpg(os.getpgid(self.server_process.pid), signal.SIGTERM)
+            # Wait for the server to finish cleanup (e.g. flushing Langfuse traces)
+            self.server_process.wait(timeout=10)
 
         if self.flask_webclient_process:
             print(f"Stopping WEB CLIENT (PID {self.flask_webclient_process.pid})...")
@@ -427,12 +424,8 @@ class NeuroSanRunner:
             else:
                 os.killpg(os.getpgid(self.nsflow_process.pid), signal.SIGKILL)
 
-        if self.phoenix_process:
-            print(f"Stopping PHOENIX (PID {self.phoenix_process.pid})...")
-            if self.is_windows:
-                self.phoenix_process.terminate()
-            else:
-                os.killpg(os.getpgid(self.phoenix_process.pid), signal.SIGKILL)
+        # Stop Phoenix using the initializer
+        self.phoenix_plugin.stop_phoenix_server()
 
         sys.exit(0)
 
@@ -461,10 +454,6 @@ class NeuroSanRunner:
                 conflicting_ports.append(self.args["nsflow_port"])
 
         if not self.args["client_only"] and self.args["server_host"] == "localhost":
-            if self.is_port_open(self.args["server_host"], self.args["server_grpc_port"]):
-                port_conflicts.append(f"Neuro-San server grpc port {self.args['server_grpc_port']} is already in use.")
-                conflicting_ports.append(self.args["server_grpc_port"])
-
             if self.is_port_open(self.args["server_host"], self.args["server_http_port"]):
                 port_conflicts.append(f"Neuro-San server http port {self.args['server_http_port']} is already in use.")
                 conflicting_ports.append(self.args["server_http_port"])
@@ -575,17 +564,8 @@ class NeuroSanRunner:
         # Set environment variables
         self.set_environment_variables()
 
-        # Initialize Phoenix instrumentation if enabled
-        if str(self.args["phoenix_enabled"]).lower() in ("true", "1", "yes", "on"):
-            try:
-                from plugins.phoenix import initialize_phoenix_if_enabled  # pylint: disable=import-outside-toplevel
-
-                initialize_phoenix_if_enabled()
-            except ImportError:
-                print("Warning: Phoenix plugin not installed.")
-                print("Install with: pip install -r plugins/phoenix/requirements.txt")
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                print(f"Warning: Phoenix initialization failed: {e}")
+        # Validate LLM API keys if --validate-keys was specified
+        self.validate_keys()
 
         # Ensure logs directory exists
         os.makedirs("logs", exist_ok=True)
@@ -594,7 +574,8 @@ class NeuroSanRunner:
         signal.signal(signal.SIGINT, self.signal_handler)  # Handle Ctrl+C
         if self.is_windows:
             signal.signal(
-                signal.SIGBREAK, self.signal_handler  # pylint: disable=no-member
+                signal.SIGBREAK,  # pylint: disable=no-member
+                self.signal_handler,
             )  # Handle Ctrl+Break on Windows
         else:
             signal.signal(signal.SIGTERM, self.signal_handler)  # Handle kill command (not available on Windows)

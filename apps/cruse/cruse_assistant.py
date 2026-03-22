@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -108,7 +108,7 @@ def get_available_systems():
         List[str]: A list of enabled HOCON filenames (without surrounding quotes)
                    that are not in the excluded set.
     """
-    excluded = {"cruse_agent.hocon"}  # Add more filenames as needed
+    excluded = {"experimental/cruse_agent.hocon"}  # Add more filenames as needed
     config = ConfigFactory.parse_file(os.environ["AGENT_MANIFEST_FILE"])
     return [
         key.strip('"').strip() for key, enabled in config.items() if enabled and key.strip('"').strip() not in excluded

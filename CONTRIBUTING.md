@@ -134,9 +134,8 @@ git checkout -b docs/documentation-update  # For documentation
 This project follows these coding standards:
 
 - **Line length**: Maximum 119 characters
-- **Formatter**: Black (v25.1.0)
-- **Import sorting**: isort with Black profile
-- **Linting**: flake8 and pylint
+- **Formatter and linter**: Ruff (v0.11.12)
+- **Code quality**: pylint
 - **Naming conventions**: Follow Google Python Style Guide
   - Functions and variables: `snake_case`
   - Classes: `PascalCase`
@@ -163,17 +162,37 @@ This project follows these coding standards:
 
 For macOS/Linux:
 ```bash
-make lint       # Run linting on source code
-make lint-tests # Run linting on test code
-make test       # Run all tests with coverage
+make lint               # Run linting on source code
+make lint-tests         # Run linting on test code
+make test               # Run all tests with coverage except integration test
+make test-integration   # run integration test
+
+require to run the follow steps 1st:
+- goto top level neuro-san-studio
+- make install
+- ". venv/bin/activate"
+- export PYTHONPATH=`pwd`
+- export AGENT_TOOL_PATH=tests/coded_tools/ 
+- export AGENT_MANIFEST_FILE=tests/registries/manifest.hocon
+
+# Run all integration test suite:
+- Run pytest -s -m "integration"
+
+# Run all test cases under that group of sectors:
+- Run pytest -s -m "integration_basic"
+- Run pytest -s -m "integration_industry"
+
+# Run all test cases that related to network agent name:
+- Run pytest -s -m "integration_basic_coffee_finder_advance"
+
 ```
 
 For Windows (manual):
 ```bash
 # Run linting
-isort apps coded_tools tests
-black apps coded_tools tests
-flake8 apps coded_tools tests
+ruff check --select I --fix apps coded_tools tests
+ruff format apps coded_tools tests
+ruff check apps coded_tools tests
 
 # Run tests
 pytest --verbose --cov=. --cov-report=term-missing --no-cov-on-fail
@@ -285,7 +304,7 @@ Use the `logging` module for logging instead of `print`.
 To enable debug logs for coded tools, set:
 
 ```bash
-export AGENT_SERVICE_LOG_JSON=logging.json
+export AGENT_SERVICE_LOG_JSON=logging.hocon
 ```
 
 ### Using the Makefile
@@ -297,7 +316,8 @@ The Makefile provides convenient commands for development (macOS/Linux):
 - `make activate` - Get activation instructions
 - `make lint` - Run code formatting and linting
 - `make lint-tests` - Run linting on tests
-- `make test` - Run all tests with coverage
+- `make test` - Run all tests with coverage except integration test
+- `make test-integration` - Run integration test
 
 ## Keeping Your Fork Updated
 
@@ -336,13 +356,13 @@ git rebase main
 - **Main Library**: [Neuro SAN](https://github.com/cognizant-ai-lab/neuro-san)
 - **YouTube**: [Decision AI](https://www.youtube.com/@decision-ai)
 - **Website**: [Cognizant AI Lab](https://www.cognizant.com/us/en/ai-lab)
-- **Twitter**: [@decision__ai](https://x.com/decision__ai)
+- **X**: [@cognizantailab](https://x.com/cognizantailab)
 - **LinkedIn**: [Cognizant AI Lab](https://www.linkedin.com/showcase/cognizant-ai-lab)
 - **Blog**: [Medium](https://medium.com/@evolutionmlmail)
 
 ## License
 
-By contributing to Neuro SAN Studio, you agree that your contributions will be licensed under the project's [Academic Public License](LICENSE.txt). Commercial use requires a commercial license from Cognizant Technology Solutions Corp.
+By contributing to Neuro SAN Studio, you agree that your contributions will be licensed under the project's [Apache 2.0 License](LICENSE.txt).
 
 ## Questions?
 

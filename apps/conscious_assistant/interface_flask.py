@@ -1,4 +1,4 @@
-# Copyright © 2025 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -64,7 +64,8 @@ def conscious_thinking_process():
             #     Each block begins with  "thought:"  or  "say:"  and continues until
             #     the next block or the end of the string.
             pattern = re.compile(
-                r"(?m)^(thought|say):[ \t]*(.*?)(?=^\s*(?:thought|say):|\Z)", re.S  # look-ahead  # dot = newline
+                r"(?m)^(thought|say):[ \t]*(.*?)(?=^\s*(?:thought|say):|\Z)",
+                re.S,  # look-ahead  # dot = newline
             )
 
             for kind, raw in pattern.findall(thoughts):
