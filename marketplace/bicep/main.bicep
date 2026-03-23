@@ -214,7 +214,7 @@ resource uiApp 'Microsoft.App/containerApps@2024-03-01' = {
     configuration: {
       ingress: {
         external: true           // UI is internet-facing
-        targetPort: 5000
+        targetPort: 5001
         transport: 'http'
         allowInsecure: false
         corsPolicy: {

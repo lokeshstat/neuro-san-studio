@@ -1,8 +1,8 @@
 name: Build and Push to ACR
 
-# Builds the backend image and pushes to Azure Container Registry.
+# Builds the backend + UI images and pushes to Azure Container Registry.
+# Uses ACR admin credentials stored as GitHub secrets (no OIDC/App Registration needed).
 # Runs on main branch pushes, releases, and manual triggers.
-# This workflow runs on GitHub-hosted runners (bypasses corporate network ACR restrictions).
 
 on:
   push:
@@ -22,19 +22,16 @@ on:
         default: true
 
 env:
-  # Override these via GitHub repo/environment variables or secrets:
-  #   ACR_LOGIN_SERVER  e.g. myregistry.azurecr.io
-  #   ACR_REPOSITORY    e.g. neuro-san-studio  (image name inside ACR)
-  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
-  ACR_REPOSITORY: ${{ vars.ACR_REPOSITORY || 'neuro-san-studio' }}
-  UI_ACR_REPOSITORY: ${{ vars.UI_ACR_REPOSITORY || 'neuro-san-studio-ui' }}
+  ACR_LOGIN_SERVER: ailabneurosan-bwggffftfecudhax.azurecr.io
+  ACR_REPOSITORY: neurosan
+  UI_ACR_REPOSITORY: neurosan-ui
+  UI_APP_PATH: ./apps/conscious_assistant
 
 jobs:
   build-backend:
     name: Build & Push Backend Image
     runs-on: ubuntu-latest
     permissions:
-      id-token: write   # needed for OIDC login to Azure
       contents: read
 
     steps:
@@ -46,7 +43,7 @@ jobs:
         shell: bash
         run: |
           SHA_SHORT=$(git rev-parse --short HEAD)
-          TAG="${{ github.event.inputs.image_tag || '' }}"
+          TAG="${{ github.event.inputs.image_tag }}"
           if [ -z "$TAG" ]; then
             case "${{ github.event_name }}" in
               release) TAG="${{ github.event.release.tag_name }}" ;;
@@ -54,28 +51,18 @@ jobs:
             esac
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "sha_short=${SHA_SHORT}" >> "$GITHUB_OUTPUT"
           echo "Resolved image tag: ${TAG}"
 
-      # --- Azure Login via OIDC (recommended — no stored secrets) ---
-      # Prerequisites: configure a Federated Identity Credential in your
-      # Entra ID App Registration pointing to this repo + branch.
-      # Then set these repo secrets/vars:
-      #   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-      - name: Azure Login (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Log in to ACR
-        run: az acr login --name ${{ env.ACR_LOGIN_SERVER }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build backend using the production multi-stage Dockerfile
       - name: Build and push backend image
         uses: docker/build-push-action@v5
         with:
@@ -85,11 +72,9 @@ jobs:
           push: true
           tags: |
             ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
-            ${{ github.event.inputs.push_latest == 'true' && format('{0}/{1}:latest', env.ACR_LOGIN_SERVER, env.ACR_REPOSITORY) || '' }}
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPOSITORY }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            BUILD_VERSION=${{ steps.tag.outputs.tag }}
 
       - name: Print image reference
         run: |
@@ -100,7 +85,6 @@ jobs:
     name: Build & Push UI Image
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: read
 
     steps:
@@ -112,7 +96,7 @@ jobs:
         shell: bash
         run: |
           SHA_SHORT=$(git rev-parse --short HEAD)
-          TAG="${{ github.event.inputs.image_tag || '' }}"
+          TAG="${{ github.event.inputs.image_tag }}"
           if [ -z "$TAG" ]; then
             case "${{ github.event_name }}" in
               release) TAG="${{ github.event.release.tag_name }}" ;;
@@ -121,31 +105,26 @@ jobs:
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Azure Login (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Log in to ACR
-        run: az acr login --name ${{ env.ACR_LOGIN_SERVER }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Detect which UI app to build (conscious_assistant or cruse or wwaw)
-      # Override UI_APP_PATH via repo variable to select the right UI
       - name: Build and push UI image
         uses: docker/build-push-action@v5
         with:
-          context: ${{ vars.UI_APP_PATH || './apps/conscious_assistant' }}
-          file: ${{ vars.UI_DOCKERFILE || './Dockerfile' }}
+          context: .
+          file: ./apps/conscious_assistant/Dockerfile
           platforms: linux/amd64
           push: true
           tags: |
             ${{ env.ACR_LOGIN_SERVER }}/${{ env.UI_ACR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
-            ${{ github.event.inputs.push_latest == 'true' && format('{0}/{1}:latest', env.ACR_LOGIN_SERVER, env.UI_ACR_REPOSITORY) || '' }}
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.UI_ACR_REPOSITORY }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
