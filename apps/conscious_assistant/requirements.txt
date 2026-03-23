@@ -1,1 +1,4 @@
 schedule~=1.2.2
+flask>=3.0.0
+flask-socketio>=5.3.0
+eventlet>=0.35.0
