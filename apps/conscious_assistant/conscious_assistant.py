@@ -25,9 +25,12 @@ AGENT_NETWORK_NAME = "conscious_agent"
 def set_up_conscious_assistant():
     """Configure these as needed."""
     agent_name = AGENT_NETWORK_NAME
-    connection = "direct"
-    host = "localhost"
-    port = 30011
+    # Allow connection settings to be overridden via environment variables
+    # so the UI can connect to a remote neuro-san server (e.g. in Azure).
+    # Defaults to "direct"/localhost for local development.
+    connection = os.environ.get("NEURO_SAN_SERVER_CONNECTION", "direct")
+    host = os.environ.get("NEURO_SAN_SERVER_HOST", "localhost")
+    port = int(os.environ.get("NEURO_SAN_SERVER_HTTP_PORT", "30011"))
     local_externals_direct = False
     metadata = {"user_id": os.environ.get("USER")}
 
