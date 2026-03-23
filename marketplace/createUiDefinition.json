@@ -1,0 +1,142 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "basics": [
+      {
+        "name": "appName",
+        "type": "Microsoft.Common.TextBox",
+        "label": "Application name",
+        "defaultValue": "neurosan",
+        "toolTip": "Short name (3–16 lowercase alphanumeric) used as a prefix for all Azure resources.",
+        "constraints": {
+          "required": true,
+          "regex": "^[a-z][a-z0-9]{2,15}$",
+          "validationMessage": "Must be 3–16 lowercase letters or digits, starting with a letter."
+        }
+      },
+      {
+        "name": "location",
+        "type": "Microsoft.Common.DropDown",
+        "label": "Region",
+        "defaultValue": "East US",
+        "toolTip": "Azure region where all resources will be deployed.",
+        "constraints": {
+          "allowedValues": [
+            { "label": "East US",          "value": "eastus" },
+            { "label": "East US 2",        "value": "eastus2" },
+            { "label": "West US 2",        "value": "westus2" },
+            { "label": "West US 3",        "value": "westus3" },
+            { "label": "North Europe",     "value": "northeurope" },
+            { "label": "West Europe",      "value": "westeurope" },
+            { "label": "UK South",         "value": "uksouth" },
+            { "label": "Southeast Asia",   "value": "southeastasia" },
+            { "label": "Australia East",   "value": "australiaeast" }
+          ],
+          "required": true
+        }
+      }
+    ],
+    "steps": [
+      {
+        "name": "containerConfig",
+        "label": "Container Registry",
+        "elements": [
+          {
+            "name": "acrLoginServer",
+            "type": "Microsoft.Common.TextBox",
+            "label": "ACR Login Server",
+            "placeholder": "myregistry.azurecr.io",
+            "toolTip": "The login server of the Azure Container Registry that holds the NeuroSan images.",
+            "constraints": {
+              "required": true,
+              "regex": "^[a-z0-9]+\\.azurecr\\.io$",
+              "validationMessage": "Must be a valid ACR FQDN, e.g. myregistry.azurecr.io"
+            }
+          },
+          {
+            "name": "backendImageTag",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Backend image tag",
+            "defaultValue": "latest",
+            "toolTip": "Docker image tag for the NeuroSan backend. Use 'latest' or a specific version.",
+            "constraints": { "required": true }
+          },
+          {
+            "name": "uiImageTag",
+            "type": "Microsoft.Common.TextBox",
+            "label": "UI image tag",
+            "defaultValue": "latest",
+            "constraints": { "required": true }
+          }
+        ]
+      },
+      {
+        "name": "llmConfig",
+        "label": "LLM API Keys",
+        "elements": [
+          {
+            "name": "llmInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "Provide at least one LLM API key. Keys are stored securely in Azure Key Vault and never exposed in plain text. You can add more keys after deployment."
+            }
+          },
+          {
+            "name": "openAiApiKey",
+            "type": "Microsoft.Common.PasswordBox",
+            "label": {
+              "password": "OpenAI API Key",
+              "confirmPassword": "Confirm OpenAI API Key"
+            },
+            "toolTip": "Your OpenAI API key (sk-...). Leave empty if not using OpenAI.",
+            "constraints": { "required": false }
+          },
+          {
+            "name": "anthropicApiKey",
+            "type": "Microsoft.Common.PasswordBox",
+            "label": {
+              "password": "Anthropic API Key",
+              "confirmPassword": "Confirm Anthropic API Key"
+            },
+            "toolTip": "Your Anthropic API key. Leave empty if not using Anthropic.",
+            "constraints": { "required": false }
+          }
+        ]
+      },
+      {
+        "name": "scalingConfig",
+        "label": "Scaling & Performance",
+        "elements": [
+          {
+            "name": "containerAppTier",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Container App tier",
+            "defaultValue": "Consumption",
+            "toolTip": "Consumption is pay-per-use (recommended for getting started). Dedicated provides reserved capacity.",
+            "constraints": {
+              "allowedValues": [
+                { "label": "Consumption (pay-per-use, recommended)", "value": "Consumption" },
+                { "label": "Dedicated (reserved capacity)",           "value": "Dedicated" }
+              ],
+              "required": true
+            }
+          }
+        ]
+      }
+    ],
+    "outputs": {
+      "location":         "[basics('location')]",
+      "appName":          "[basics('appName')]",
+      "acrLoginServer":   "[steps('containerConfig').acrLoginServer]",
+      "backendImageTag":  "[steps('containerConfig').backendImageTag]",
+      "uiImageTag":       "[steps('containerConfig').uiImageTag]",
+      "openAiApiKey":     "[steps('llmConfig').openAiApiKey]",
+      "anthropicApiKey":  "[steps('llmConfig').anthropicApiKey]",
+      "containerAppTier": "[steps('scalingConfig').containerAppTier]"
+    }
+  }
+}
