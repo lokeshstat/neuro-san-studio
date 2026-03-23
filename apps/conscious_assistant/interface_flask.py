@@ -167,4 +167,4 @@ def run_scheduled_tasks():
 atexit.register(cleanup)
 
 if __name__ == "__main__":
-    socketio.run(app, debug=False, port=5001, allow_unsafe_werkzeug=True, log_output=True, use_reloader=False)
+    socketio.run(app, host="0.0.0.0", debug=False, port=5001, allow_unsafe_werkzeug=True, log_output=True, use_reloader=False)
