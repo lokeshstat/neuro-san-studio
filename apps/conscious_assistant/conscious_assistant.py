@@ -27,16 +27,19 @@ def set_up_conscious_assistant():
     agent_name = AGENT_NETWORK_NAME
     # Allow connection settings to be overridden via environment variables
     # so the UI can connect to a remote neuro-san server (e.g. in Azure).
-    # Defaults to "direct"/localhost for local development.
+    # Defaults to "direct" for local development.
+    # In Azure set:
+    #   NEURO_SAN_SERVER_CONNECTION=https
+    #   NEURO_SAN_SERVER_HOST=<backend-fqdn>   (no https:// prefix)
+    #   NEURO_SAN_SERVER_HTTP_PORT=443
     connection = os.environ.get("NEURO_SAN_SERVER_CONNECTION", "direct")
     host = os.environ.get("NEURO_SAN_SERVER_HOST", "localhost")
-    port = int(os.environ.get("NEURO_SAN_SERVER_HTTP_PORT", "30011"))
-    local_externals_direct = False
-    metadata = {"user_id": os.environ.get("USER")}
+    port = int(os.environ.get("NEURO_SAN_SERVER_HTTP_PORT", "8080"))
+    metadata = {"user_id": os.environ.get("USER", "unknown")}
 
     # Create session factory and agent session
     factory = AgentSessionFactory()
-    session = factory.create_session(connection, agent_name, host, port, local_externals_direct, metadata)
+    session = factory.create_session(connection, agent_name, host, port, metadata=metadata)
     # Initialize any conversation state here
     conscious_thread = {
         "last_chat_response": None,
