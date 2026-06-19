@@ -57,6 +57,7 @@
   - [MCP Servers](#mcp-servers)
     - [MCP Server Configuration](#mcp-server-configuration)
     - [Authentication](#authentication)
+    - [Examples](#examples)
   - [Middleware](#middleware)
     - [class](#class)
     - [args](#args)
@@ -72,13 +73,19 @@
     - [AAOSA](#aaosa)
     - [External Agent Networks](#external-agent-networks)
     - [Memory](#memory)
+      - [Chat Context](#chat-context)
+      - [Persistent Memory](#persistent-memory)
   - [Connect with other agent frameworks](#connect-with-other-agent-frameworks)
   - [Plugins](#plugins)
   - [Test](#test)
     - [Unit test](#unit-test)
     - [Integration Test](#integration-test)
       - [Add test case](#add-test-case)
+        - [Automatic Test Generation](#automatic-test-generation)
+        - [Manual creation](#manual-creation)
+        - [Register the fixture](#register-the-fixture)
       - [Run test](#run-test)
+  - [Improving agent networks](#improving-agent-networks)
 
 <!-- TOC -->
 
@@ -133,8 +140,16 @@ whitespace and the path to the imported file as a quoted string:
 include "registries/aaosa.hocon"
 ```
 
-> **Note**: The file path in include should be an **absolute path**
-> or relative to the **root folder** to ensure it can be resolved correctly.
+> **Note**: Include path resolution depends on how the file is loaded:
+>
+> - **Top-level files** (loaded directly by neuro-san) resolve include paths relative to the **root folder**
+(the working directory where the server is started). Use paths like `registries/aaosa.hocon`.
+> - **Included files** (loaded via an `include` directive in another file) resolve their own include paths relative to
+**their own location** on disk. Use relative paths like `../../../config/llm_config.hocon`.
+>
+> A file that may be loaded either way cannot use the same include path for both contexts.
+The recommended pattern is to create a thin top-level wrapper file that includes the base file
+using a root-relative path; the base file can then safely use file-relative paths in its own includes.
 
 HOCON supports value substitution by referencing previously defined configuration values. This allows constants to be
 defined once and reused throughout the file.
@@ -173,7 +188,7 @@ you can quote only the non-substituted parts:
 "instructions": ${instruction_prefix} "main instruction" ${instruction_suffix}
 ```
 
-Also not that if you're using json notation you need to put the include with the curly braces:
+Also note that if you're using json notation you need to put the include with the curly braces:
 
 ```hocon
 {
@@ -277,6 +292,9 @@ The `llm_config` section in the agent network configuration file defines which L
 You can specify it at two levels:
 - **Network-level**: Applies to all agents in the file.
 - **Agent-level**: Overrides the network-level configuration for a specific agent.
+
+For a full working example of per-agent configuration using different Anthropic models, see the
+[Book Recommender with Multiple LLM Configs](examples/basic/book_recommender_multiple_llm_configs.md) example.
 
 Neuro-SAN includes several predefined LLM providers and models. To use one of these, set the `model_name` key to
 the name of the model you want. In addition, model-specific parameters (such as `temperature`, `max_tokens`, etc.)
@@ -469,8 +487,13 @@ To find which models are available in your region, refer to the official AWS doc
 
 ### Gemini
 
-To use Gemini models, set the `GOOGLE_API_KEY` environment variable to your Google Gemini API key
-and specify which model to use in the `model_name` field of the `llm_config` section of an agent network hocon file:
+To use Gemini models:
+
+1. The `langchain-google-genai` package is already included with neuro-san-studio,
+   so no need to install anything new.
+
+2. Set the `GOOGLE_API_KEY` environment variable to your Google Gemini API key
+   and specify which model to use in the `model_name` field of the `llm_config` section of an agent network hocon file:
 
 ```hocon
     "llm_config": {
@@ -551,10 +574,10 @@ No API key is required — authentication is handled transparently by Google's A
 <!-- -->
 
 > **Tip**: To centralize the LLM configuration and reuse it across multiple agent networks, define it in a
-> separate file (e.g. `registries/llm_config.hocon`) and include it in your agent network HOCON files:
+> separate file (e.g. `config/llm_config.hocon`) and include it in your agent network HOCON files:
 >
 > ```hocon
-> include "registries/llm_config.hocon"
+> include "config/llm_config.hocon"
 > ```
 
 For more information on Vertex AI authentication and available models, see the
@@ -662,7 +685,7 @@ Examples:
 
 Note:
 
-- `base_url` **must starts** with `http://` or `https://`, otherwise the server defaults to `http://localhost:11434`.
+- `base_url` **must start** with `http://` or `https://`, otherwise the server defaults to `http://localhost:11434`.
 
 - if the port is omitted:
 
@@ -730,7 +753,7 @@ Simply set the `MODEL_NAME` environment variable before starting the server:
 >
 > ```bash
 > export MODEL_NAME="claude-3-7-sonnet"
-> python -m run
+> python -m neuro_san_studio run
 > ```
 
 ### See also
@@ -1236,9 +1259,26 @@ For more information on toolbox, please see [Toolbox Info HOCON File Reference](
 ## MCP Servers
 
 Agents can invoke tools exposed by remote **Model Context Protocol (MCP)** servers.
-URLs must either:
-- start with `https://mcp`, **or**
-- end with `/mcp`.
+
+MCP server URLs are recognized when they conform to the
+[MCP canonical server URI specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#canonical-server-uri):
+they must use the `http` or `https` scheme, must include a host, and must not contain a fragment.
+To distinguish MCP server URLs from other external agent URLs, the literal `mcp` must appear either
+as a label in the hostname (e.g. `mcp.example.com`) or as any segment of the URL path
+(e.g. `/mcp`, `/mcp/free`, `/server/mcp`, `/v1/mcp/server`).
+
+Examples of URLs that are recognized as MCP servers:
+
+- `https://mcp.example.com/mcp`
+- `https://mcp.example.com`
+- `https://mcp.example.com:8443`
+- `https://example.com/mcp/free`
+- `https://mcp.example.com/mcp?profile=free`
+- `https://example.com/v1/mcp/server`
+- `http://localhost:8000/mcp/`
+
+If a URL you want to use does not satisfy these rules, fall back to the dictionary form below,
+which is always treated as an MCP reference regardless of URL shape.
 
 ### MCP Server Configuration
 
@@ -1258,7 +1298,8 @@ MCP servers can be configured in one of two formats under the `tools` field.
 
 2. Dictionary Reference
 
-    Use this format when you want to explicitly control which tools are exposed from a given MCP server.
+    Use this format when you want to explicitly control which tools are exposed from a given MCP server,
+    or when your URL does not satisfy the recognition rules above.
 
     ```json
     "tools": [
@@ -1269,8 +1310,8 @@ MCP servers can be configured in one of two formats under the `tools` field.
     ]
     ```
 
-   - The tools key specifies a whitelist of tools made available to the agent.
-   - If the tools key is omitted, all tools from the MCP server will be accessible.
+   - The `tools` key specifies a whitelist of tools made available to the agent.
+   - If the `tools` key is omitted, all tools from the MCP server will be accessible.
 
 ### Authentication
 
@@ -1319,7 +1360,12 @@ following methods.
    - If authentication headers are defined in both sly_data, and `MCP_SERVERS_INFO_FILE` then sly_data takes precedence.
    - Tool filtering from `MCP_SERVERS_INFO_FILE` is applied only if no tool filtering is defined
     directly in the agent network HOCON configuration.
-   - For example, see [mcp_info.hocon](../mcp/mcp_info.hocon)
+   - For example, see [mcp_info.hocon](../neuro_san_studio/mcp/mcp_info.hocon)
+
+### Examples
+
+For simple examples of MCP servers in various languages (e.g. Python, Java) and connecting them to neuro-san,
+please visit this repo: [neuro-san-mcp-examples](https://github.com/kaushik-cognizant/neuro-san-mcp-examples)
 
 ## Middleware
 
@@ -1357,6 +1403,43 @@ Only class-based middleware is supported (not annotation-based). See
 [AgentMiddleware](https://docs.langchain.com/oss/python/langchain/middleware/custom#class-based-middleware)
 for details on how to implement one.
 
+#### Note on `hook_config`
+
+Each individual agent in Neuro SAN runs its own internal LangGraph control loop — a state machine with three
+core nodes: `model` (the LLM call), `tools` (tool execution), and `end` (exit). The `@hook_config` decorator
+declares which of these nodes a hook method is allowed to jump to, creating the corresponding conditional edges
+in that loop at build time.
+
+```python
+@hook_config(can_jump_to=["end", "model", "tools"])
+```
+
+Supported jump targets:
+
+- `"end"` — exits the agent loop and returns to the caller (or the first `after_agent` hook if one is registered)
+- `"model"` — re-enters at the model node (or the first `before_model` hook)
+- `"tools"` — re-enters at the tools node
+
+To trigger a jump, return a dict containing `"jump_to": "<target>"` from the decorated hook method. Returning
+`None` (or omitting `jump_to`) lets execution continue normally.
+
+```python
+@hook_config(can_jump_to=["model"])
+async def aafter_agent(self, state: AgentState, runtime: Runtime):
+    if not self._is_valid(state):
+        return {"messages": [...], "jump_to": "model"}
+    return None
+```
+
+`@hook_config` works on all hook variants — `before_agent`, `after_agent`, `before_model`, `after_model`, and
+their async `abefore_*` / `aafter_*` counterparts. Declare only the targets you actually use; undeclared targets
+will not have edges in the graph and cannot be jumped to at runtime.
+
+See also:
+- [hook_config reference](https://reference.langchain.com/python/langchain/agents/middleware/types/hook_config)
+- [Agent jumps](https://docs.langchain.com/oss/python/langchain/middleware/custom#agent-jumps)
+- [Before-agent guardrails](https://docs.langchain.com/oss/python/langchain/guardrails#before-agent-guardrails)
+
 ### args
 
 A dictionary of keyword arguments passed to the middleware class constructor. Keys are argument names and
@@ -1376,9 +1459,24 @@ values are argument values, matching the constructor signature of the class bein
 The following argument names are recognized by the agent framework and automatically populated if they appear
 in both the middleware dictionary and the class constructor signature:
 
+- **`chat_history`** — a list of AI and human messages accumulated during the session. See
+  [neuro-san summarization middleware](https://github.com/cognizant-ai-lab/neuro-san/blob/main/neuro_san/middleware/neuro_san_summarization_middleware.py)
+  for an example.
+- **`journal`** — an interface for journaling chat messages.
 - **`origin`** — a list of dictionaries describing where in the agent network hierarchy this middleware
   was instantiated.
 - **`origin_str`** — a simpler string representation of `origin`.
+- **`progress_reporter`** — an interface for reporting on an agent network's progress.
+- **`reservationist`** — an interface for making reservations on temporary networks. Requires reservations
+  to be enabled in the agent's `allow` block:
+
+    ```json
+    "allow": {
+        "reservations": true
+    }
+    ```
+
+    See [Agent Network Designer](../registries/agent_network_designer.hocon) for an example.
 - **`sly_data`** — the agent's `sly_data` dictionary, shared across all middleware and coded tools for
   the current request. See [Sly data](#sly-data) for more information.
 
@@ -1526,8 +1624,9 @@ Note:
 - All console logs are color-coded and pretty-formatted using the rich based log bridge plugin.
 - Enable or disable rich logs via setting an env variable `LOGBRIDGE_ENABLED` on terminal or in your .env file.
   By default the value is set to `true`.
-- Any updates to console logs can be managed via this plugin at `plugins/log_bridge/`.
-- Use the `log_cfg` dict located at `plugins/log_bridge/process_log_bridge.py` to configure the formatting of logs.
+- Any updates to console logs can be managed via this plugin at `neuro_san_studio/plugins/log_bridge/`.
+- Use the `log_cfg` dict located at `neuro_san_studio/plugins/log_bridge/process_log_bridge.py`
+  to configure the formatting of logs.
 
 ## Debugging
 
@@ -1547,9 +1646,11 @@ Furthermore, please install the build requirements in your virtual environment v
     pytest.set_trace()
     ```
 
-3. Start the client and server via `python3 -m run`, select `music_nerd_pro` agent network, and ask a question like
-`Where was John Lennon born?`. The code execution stops at the line where you added `pytest.set_trace` statement. You
-can step through the code, view variable values, etc. by typing commands in the terminal. For all the debugger options,
+3. Start the client and server via `python -m neuro_san_studio run`,
+select `music_nerd_pro` agent network, and ask a question like
+`Where was John Lennon born?`. The code execution stops at the line where you added
+`pytest.set_trace` statement. You can step through the code, view variable values,
+etc. by typing commands in the terminal. For all the debugger options,
 please refer to pdb [documentation](https://docs.python.org/3/library/pdb.html)
 
 ## Advanced
@@ -1577,15 +1678,12 @@ In this architecture, agents decide if they can answer inquiries or if they need
 
 Reference:
 [Iterative Statistical Language Model Generation for Use with an
-Agent-Oriented Natural Language Interface](https://citeseerx.ist.psu.edu/document?repid=rep1&type=pdf&doi=3004005f1e736815b367be83f2f90cc0fa9e0411)
-
-<!-- (https://citeseerx.ist.psu.edu/document?repid=rep1&type=pdf&doi=011fb718658d611294613286c0f4b143aed40f43) -->
+Agent-Oriented Natural Language Interface](https://www.sri.com/wp-content/uploads/2021/12/iterative_statistical_language_model_generation_for_use.pdf)
 
 Look at [../registries/basic/smart_home.hocon](../registries/basic/smart_home.hocon) and in particular:
 
 - aaosa_instructions
 - aaosa_call
-- aaosa_command
 
 ### External Agent Networks
 
@@ -1613,7 +1711,85 @@ Look at [Consumer Decision Assistant](examples/industry/consumer_decision_assist
 
 ### Memory
 
-TBD
+#### Chat Context
+
+**Chat context** is the in-session message history between the user and the
+agent. It is managed automatically by the framework and resets when the session
+ends.
+
+#### Persistent Memory
+
+**Persistent memory** is storage that survives across sessions. The agent
+explicitly reads and writes it via the `PersistentMemoryMiddleware`. It holds
+user-facing information — personal details, preferences, and facts the user has
+shared. It is not for internal LLM state such as LLM call results, pass/fail
+outcomes, or execution traces.
+
+Three storage backends are available. The two file-backed backends are
+intended for developers running an agent locally on their own machine; the
+`mem0` backend is intended for shared or production deployments where each
+end user must see only their own memories.
+
+- **`json_file`** (default) — stores all topics for an agent in a single
+  `memory.json` file on the developer's local disk, scoped per
+  `(network, agent)`.
+- **`markdown_file`** — stores each topic as a separate `.md` file on the
+  developer's local disk, under the same `(network, agent)` scope.
+- **`mem0`** — stores topics as memory entries in the [Mem0](https://mem0.ai)
+  cloud and partitions them by `(user_id, network, agent)`, so different end
+  users talking to the same agent see different sets of memories.
+
+The middleware exposes six operations (`create`, `read`, `append`, `delete`,
+`search`, `list`). Each operation is committed as soon as the LLM call
+returns; there is no end-of-turn flush, and a crash mid-turn loses at most
+the in-flight call. Topic summarization is off by default — opt in by
+adding a `summarization` block to `memory_config`.
+
+Minimal configuration — only `class` is required, and the backend defaults
+to `json_file`. To use `markdown_file` or `mem0`, set the backend explicitly.
+
+See the [file-backed configuration reference](./examples/tools/persistent_memory_local.md#configuration)
+and the [Mem0 configuration reference](./examples/tools/persistent_memory_mem0.md#configuration)
+for all available options.
+
+File-backed (default — `json_file`):
+
+```hocon
+"middleware": [
+    {
+        "class": "middleware.persistent_memory.persistent_memory_middleware.PersistentMemoryMiddleware"  # (required)
+    }
+]
+```
+
+Mem0 cloud backend — `sly_data: true` is required so the framework can
+forward `user_id` per request:
+
+```hocon
+"middleware": [
+    {
+        "class": "middleware.persistent_memory.persistent_memory_middleware.PersistentMemoryMiddleware",
+        "args": {
+            "sly_data": true,
+            "memory_config": {
+                "storage": { "backend": "mem0" }
+            }
+        }
+    }
+]
+```
+
+For a complete walkthrough of the file-backed backends — including HOCON
+configuration, a sample conversation, backend trade-offs, summarizer tuning,
+and debugging tips — see the
+[Persistent Memory (Local) documentation](./examples/tools/persistent_memory_local.md). A minimal
+working network is available at
+[persistent_memory_local.hocon](../registries/tools/persistent_memory_local.hocon).
+
+For the cloud-hosted variant with per-user scoping, see the
+[Persistent Memory (Mem0) documentation](./examples/tools/persistent_memory_mem0.md) and its
+reference network at
+[persistent_memory_mem0.hocon](../registries/tools/persistent_memory_mem0.hocon).
 
 ## Connect with other agent frameworks
 
@@ -1647,14 +1823,47 @@ make test
 or
 
 ```bash
-python -m pytest tests/ -v --cov=coded_tools,run.py -m "not integration"
+python -m pytest tests/ -v --cov=coded_tools --cov=neuro_san_studio -m "not integration"
 ```
 
 ### Integration Test
 
 #### Add test case
 
-TBD
+Integration tests are data-driven: each test case is a single HOCON file under `tests/fixtures/`.
+The full schema is documented in the
+[test case HOCON reference](https://github.com/cognizant-ai-lab/neuro-san/blob/main/docs/test_case_hocon_reference.md).
+
+There are two ways to create a test case: automatically with the
+[Agent Network Test Generator](agent_network_test_generator.md),
+
+or manually.
+
+##### Automatic Test Generation
+
+The `agent_network_test_generator` agent network can analyze an existing network and
+produce test fixtures automatically. Start the server, select
+`agent_network_test_generator`, and provide a prompt like
+`Generate test cases for basic/coffee_finder_advanced`.
+
+For test levels, example prompts, and review tips, see the full
+[Agent Network Test Generator](agent_network_test_generator.md) documentation.
+
+##### Manual creation
+
+Create a new `.hocon` file under `tests/fixtures/<group>/<agent_name>/`.
+For the full schema reference including all supported fields (`agent`, `success_ratio`,
+`connections`, `interactions`, `sly_data`, `response`, stock tests, etc.), see the
+[Data-Driven Test Case HOCON File Reference](https://github.com/cognizant-ai-lab/neuro-san/blob/main/docs/test_case_hocon_reference.md)
+in the neuro-san repository.
+
+For existing examples, look at the fixtures under `tests/fixtures/` in this repository.
+
+##### Register the fixture
+
+Generated and manually created fixtures are **not** automatically picked up by CI.
+See [Running a Generated Test Fixture — Option B](agent_network_test_generator.md#option-b-register-in-the-integration-test-suite)
+for how to add them to the integration test suite.
 
 #### Run test
 
@@ -1716,3 +1925,59 @@ Please select the execution option that best aligns with the level of validation
     ```bash
     pytest -s ./tests/integration/test_integration_test_hocons.py::TestIntegrationTestHocons::test_hocon_industry_0_industry_airline_policy_basic_eco_carryon_baggage
     ```
+
+## Improving agent networks
+
+<!-- pyml disable line-length -->
+
+Best practices for building and tuning AAOSA-based agent networks.
+
+- Partition knowledge documents cleanly across agents:
+   Organize content into per-agent subdirectories, join broken lines, and remove stale or redundant material. Clean, well-scoped inputs improve retrieval accuracy and agent reliability.
+
+- Choose a routing strategy that matches your document layout:
+   Use single-agent routing when domains are clearly distinct or when latency and token cost are a concern. Use multi-agent routing when document boundaries are ambiguous or overlap; fan out to all relevant agents and merge their results.
+
+- Add routing instructions to every agent that delegates (not just the frontman):
+   Any intermediate agent that calls sub-agents needs explicit routing logic. For simple queries with a clear single owner, instruct each routing agent to match the query to exactly one sub-agent and send it there directly. For anything more complex — queries that span multiple domains, require partial answers from several agents, or are ambiguous up front — **use AAOSA**. AAOSA is the preferred pattern for multi-agent coordination: each sub-agent independently assesses whether and how it can contribute, reports back, and the routing agent synthesizes a unified response. When in doubt, default to AAOSA; the overhead of unnecessary sub-agent calls is lower than the cost of misrouting or incomplete answers.
+
+- Design the agent network structure carefully:
+   Parent-child relationships, nesting depth, and peer groupings all affect routing accuracy. If a sub-agent spans multiple parent domains, consider promoting it to a top-level peer to avoid misrouting and reduce ambiguity.
+
+- Write rich function descriptions (they are your routing layer):
+   The top-level agent routes queries based on each sub-agent's `name` and `description` in the `function` block. Always override the `description` when extending `${aaosa_call}`. Choose agent names that reflect their full scope. Keep descriptions concise; one line is enough. Avoid putting lengthy descriptions in the prompt itself, as doing so inflates cost without added benefit.
+
+- Prefer negative instructions over positive ones:
+   In practice, "NEVER do X" is followed more reliably than "try to do X", especially when combined with capitalized keywords. When a rule is critical, phrase it as a prohibition.
+
+- Use capitalized keywords sparingly but strategically:
+   Words like `NEVER`, `ALWAYS`, and `ONLY` in all-caps are strong emphasis markers. Overusing them dilutes their effect — reserve capitalization for 3–5 of your most critical rules. Since LLMs parse instructions in Markdown format, combining caps with bold formatting (e.g., **NEVER**) provides an additional emphasis signal.
+
+- Use numbered lists for agent instructions, not prose:
+   Prose is appropriate for descriptions, but agent rules should be expressed as numbered steps (1, 2, 3 …). Structured lists are followed more reliably than dense paragraphs, and numbered ordering helps the LLM process instructions sequentially.
+
+- Repeat critical instructions at the top and bottom of the prompt:
+   LLM compliance improves when key rules appear more than once. Define cross-cutting rules in an `instructions_prefix` block (injected at the top) and repeat the most critical constraints at the end of each agent's `instructions`. Keep prompts concise; excess context increases the risk of rules being ignored.
+
+- Avoid the "lost in the middle" problem:
+   LLMs attend most strongly to the beginning and end of a prompt; content in the middle is most likely to be overlooked. Place agent identity and the most critical rules at the start, repeat key constraints at the end, and put edge cases and secondary rules in the middle.
+
+- Include explicit tool-call instructions with exact parameter values:
+   Spell out the tool name, parameter name, and expected value in the agent's instructions. Without this, agents may skip tool calls entirely and answer from pre-trained knowledge rather than the provided documents.
+
+- Use `aaosa_basic.hocon` over `aaosa.hocon`:
+   The basic variant includes only the core AAOSA variables, without additional features that may introduce unintended behavior. It is more refined and produces more reliable results in practice.
+
+- Use prompt optimization tools to iterate faster:
+   Feed your current prompt, failing test cases, and expected outputs to a prompt optimizer for the model you are using (e.g., [OpenAI Optimizer](https://platform.openai.com/chat/edit?models=gpt-5&optimize=true) or [Claude Optimizer](https://claude.ai/public/artifacts/422bb5fc-c03e-4488-9e49-9ad4239398fe)) and ask for a targeted rewrite. This is often faster than manual trial and error.
+
+- Structure agents with explicit query-processing pipelines:
+   Without step-by-step decomposition instructions, agents tend to call only one sub-agent even for multi-domain questions. Define an explicit processing pipeline (e.g., analyze → decompose → delegate → synthesize) for the frontman and apply similar step-by-step instructions to mid-level and leaf agents.
+
+- Add anti-summarization rules to preserve completeness:
+   LLMs default to summarizing responses, which drop important variations, exceptions, and edge cases. If agents must preserve the exact content of source documents, explicitly instruct them not to omit details — for example: "Include ALL details, categories, exceptions, and variations."
+
+- Keep prompts short and focused:
+   Every unnecessary sentence increases the probability that a rule will be ignored. Move lengthy explanations and domain knowledge to function descriptions or source documents, and reserve the instructions block for behavioral rules only.
+
+<!-- pyml enable line-length -->

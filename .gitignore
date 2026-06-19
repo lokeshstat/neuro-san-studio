@@ -28,6 +28,7 @@ MANIFEST
 logs/
 # .python-version appears when we try to use uv
 .python-version
+uv.lock
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -195,11 +196,14 @@ token.json
 # example files from agent networks
 TopicMemory.json
 
-# Cruse related local database
-cruse_threads.db
+# local database
+*.db
 
 # Generated agent networks by the designer
 registries/generated/
+
+# Persistent memory tool default root (per-user, per-agent memory files)
+memory/
 
 # test local only
 registries/manifest.hocon.test

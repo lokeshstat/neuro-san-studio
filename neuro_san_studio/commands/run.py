@@ -1,0 +1,572 @@
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+import argparse
+import logging
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+from typing import Any
+from typing import Dict
+from typing import Tuple
+
+from dotenv import load_dotenv
+from timedinput import timedinput
+
+from neuro_san_studio import mcp as _mcp_pkg
+from neuro_san_studio.interfaces.process_logger_interface import ProcessLoggerInterface
+from neuro_san_studio.plugins.plugin_loader import PluginLoader
+from neuro_san_studio.runner.simple_process_logger import SimpleProcessLogger
+
+# Long enough to never bite a real user; finite so timedinput is happy and so a
+# detached terminal can't hang the process forever.
+INPUT_TIMEOUT_SECONDS = 300
+
+# Path to the mcp_info.hocon that ships inside the neuro_san_studio package.
+# Resolving via the imported package's __file__ works both in-repo (where
+# neuro_san_studio/ is just a folder on sys.path) and after `pip install`
+# (where it lives in site-packages), on every supported platform.
+_BUNDLED_MCP_INFO_FILE = os.path.join(os.path.dirname(_mcp_pkg.__file__), "mcp_info.hocon")
+
+
+class NeuroSanRunner:
+    """Command-line tool to run the Neuro SAN server and web client."""
+
+    # pylint: disable=too-many-instance-attributes
+    def __init__(self):
+        """Initialize configuration and parse CLI arguments."""
+        self._logger = logging.getLogger(self.__class__.__name__)
+        self.is_windows = os.name == "nt"
+        self.root_dir = os.getcwd()
+        self.logs_dir = os.path.join(self.root_dir, "logs")
+        self.thinking_file = os.path.join(self.logs_dir, "agent_thinking.txt")
+        self.thinking_dir = os.path.join(self.logs_dir, "thinking_dir")
+        print(f"Root directory: {self.root_dir}")
+        # Load environment variables from .env file
+        self.load_env_variables()
+
+        plugins_file = PluginLoader.resolve_plugins_file(self.root_dir)
+        self.plugin_classes = PluginLoader.load_plugin_classes(plugins_file)
+
+        # Default Configuration
+        self.args: Dict[str, Any] = {
+            "server_host": os.getenv("NEURO_SAN_SERVER_HOST", "localhost"),
+            "server_http_port": int(os.getenv("NEURO_SAN_SERVER_HTTP_PORT", "8080")),
+            "server_connection": str(os.getenv("NEURO_SAN_SERVER_CONNECTION", "http")),
+            "manifest_update_period_seconds": int(os.getenv("AGENT_MANIFEST_UPDATE_PERIOD_SECONDS", "5")),
+            "default_sly_data": str(os.getenv("DEFAULT_SLY_DATA", "")),
+            "nsflow_host": os.getenv("NSFLOW_HOST", "localhost"),
+            "nsflow_port": int(os.getenv("NSFLOW_PORT", "4173")),
+            "nsflow_plugin_cruse": os.getenv("NSFLOW_PLUGIN_CRUSE", "true").lower() in ("true", "1", "yes"),
+            "log_level": os.getenv("LOG_LEVEL", "info"),
+            "vite_api_protocol": os.getenv("VITE_API_PROTOCOL", "http"),
+            "vite_ws_protocol": os.getenv("VITE_WS_PROTOCOL", "ws"),
+            "thinking_file": os.getenv("THINKING_FILE", self.thinking_file),
+            "thinking_dir": os.getenv("THINKING_DIR", self.thinking_dir),
+            # Ensure all paths are resolved relative to `self.root_dir`
+            "agent_manifest_file": os.getenv(
+                "AGENT_MANIFEST_FILE", os.path.join(self.root_dir, "registries", "manifest.hocon")
+            ),
+            "agent_tool_path": os.getenv("AGENT_TOOL_PATH", os.path.join(self.root_dir, "coded_tools")),
+            "agent_toolbox_info_file": self._resolve_toolbox_info_file(),
+            "mcp_servers_info_file": self._resolve_mcp_info_file(),
+            "logs_dir": self.logs_dir,
+        }
+
+        # Ensure logs directory exists
+        os.makedirs(self.logs_dir, exist_ok=True)
+        os.makedirs(self.thinking_dir, exist_ok=True)
+
+        # Instantiate plugins now that args are fully built
+        self.plugins = [cls(self.args) for cls in self.plugin_classes]
+        for plugin in self.plugins:
+            self._logger.info("Loaded plugin: %s", plugin)
+
+        for plugin in self.plugins:
+            self._logger.info("Updating args dict with plugin: %s", plugin)
+            plugin.update_args_dict(self.args)
+
+        # Parse command-line arguments
+        self.args.update(self.parse_args())
+
+        # Process references
+        self.server_process = None
+        self.nsflow_process = None
+
+    def _apply_toolbox_env(self) -> None:
+        """Export AGENT_TOOLBOX_INFO_FILE only if a user-provided toolbox path is configured.
+
+        When unset, the neuro-san framework falls back to its built-in default toolbox,
+        so a user-provided file is a pure override and is optional.
+        """
+        toolbox_file = self.args["agent_toolbox_info_file"]
+        if toolbox_file:
+            os.environ["AGENT_TOOLBOX_INFO_FILE"] = toolbox_file
+            print(f"AGENT_TOOLBOX_INFO_FILE set to: {toolbox_file}")
+        else:
+            print("AGENT_TOOLBOX_INFO_FILE: (not set — using built-in default toolbox)")
+
+    def _resolve_toolbox_info_file(self) -> str:
+        """Resolve the toolbox info file path, or return "" if it should not be exported.
+
+        A user-provided toolbox is purely an override on top of the neuro-san framework's
+        built-in default toolbox. Only set AGENT_TOOLBOX_INFO_FILE when the user has
+        opted in explicitly via the env var, or when the conventional
+        `<root>/neuro_san_studio/toolbox/toolbox_info.hocon` actually exists. Otherwise return "" so the
+        env var stays unset and the framework uses its built-in default only.
+        """
+        env_value = os.getenv("AGENT_TOOLBOX_INFO_FILE")
+        if env_value is not None:
+            return env_value
+        default_path = os.path.join(self.root_dir, "neuro_san_studio", "toolbox", "toolbox_info.hocon")
+        if os.path.isfile(default_path):
+            return default_path
+        return ""
+
+    # TODO: This duplicates GetMcpTool.get_mcp_info_file in
+    # coded_tools/agent_network_editor/get_mcp_tool.py. Refactor to call that
+    # method instead of maintaining a second copy of the resolver.
+    def _resolve_mcp_info_file(self) -> str:
+        """Resolve the MCP servers info file path.
+
+        Precedence (matches GetMcpTool.get_mcp_info_file):
+          1. MCP_SERVERS_INFO_FILE env var (used verbatim if non-empty).
+          2. <root>/mcp/mcp_info.hocon if it exists (what `init` scaffolds into a user project).
+          3. The mcp_info.hocon shipped inside the neuro_san_studio package.
+        """
+        env_value = os.getenv("MCP_SERVERS_INFO_FILE")
+        if env_value:
+            return env_value
+        scaffolded_path = os.path.join(self.root_dir, "mcp", "mcp_info.hocon")
+        if os.path.isfile(scaffolded_path):
+            return scaffolded_path
+        return _BUNDLED_MCP_INFO_FILE
+
+    def load_env_variables(self):
+        """Load .env file from project root and set variables."""
+        env_path = os.path.join(self.root_dir, ".env")
+        if os.path.exists(env_path):
+            load_dotenv(env_path)
+            print(f"Loaded environment variables from: {env_path}")
+        else:
+            print(f"No .env file found at {env_path}. \nUsing defaults.\n")
+
+    def parse_args(self):
+        """Parses command-line arguments for configuration."""
+        parser = argparse.ArgumentParser(
+            description="Run the Neuro SAN server and web client.",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+
+        parser.add_argument(
+            "--server-host", type=str, default=self.args["server_host"], help="Host address for the Neuro SAN server"
+        )
+        parser.add_argument(
+            "--server-http-port",
+            type=int,
+            default=self.args["server_http_port"],
+            help="Port number for the Neuro SAN server http endpoint",
+        )
+        parser.add_argument(
+            "--nsflow-port",
+            type=int,
+            default=self.args["nsflow_port"],
+            help="Port number for the nsflow client",
+        )
+        parser.add_argument(
+            "--log-level", type=str, default=self.args["log_level"], help="Log level for all processes"
+        )
+        parser.add_argument(
+            "--thinking-file", type=str, default=self.args["thinking_file"], help="Path to the agent thinking file"
+        )
+        parser.add_argument(
+            "--client-only", action="store_true", help="Run only the nsflow client without NeuroSan server"
+        )
+        parser.add_argument(
+            "--server-only", action="store_true", help="Run only the NeuroSan server without the default nsflow client"
+        )
+
+        # add arguments from plugins
+        for plugin in self.plugins:
+            self._logger.info("Updating parser args with plugin: %s", plugin)
+            plugin.update_parser_args(parser)
+
+        args, _ = parser.parse_known_args()
+        explicitly_passed_args = {arg for arg in sys.argv[1:] if arg.startswith("--")}
+        # Check for mutually exclusive arguments
+        if args.client_only and (
+            "--server-host" in explicitly_passed_args or "--server-port" in explicitly_passed_args
+        ):
+            parser.error("[x] You cannot specify --server-host or --server-port when using --client-only mode.")
+        if args.server_only and (
+            "--nsflow-host" in explicitly_passed_args or "--nsflow-port" in explicitly_passed_args
+        ):
+            parser.error("[x] You cannot specify --nsflow-host or --nsflow-port when using --server-only mode.")
+        if args.client_only and args.server_only:
+            parser.error("[x] You cannot specify both --client-only and --server-only at the same time.")
+
+        return vars(args)
+
+    def set_pythonpath(self):
+        """
+        Sets the PYTHONPATH environment variable to include the project root directory.
+        """
+        existing: str = os.environ.get("PYTHONPATH", "")
+
+        # Check to see if the root_dir is already in PYTHONPATH. If so, don't add it again.
+        # This block below was suggested by Copilot.
+        normalized_root_dir = os.path.normcase(os.path.abspath(self.root_dir))
+        existing_paths = [path for path in existing.split(os.pathsep) if path]
+        if any(os.path.normcase(os.path.abspath(path)) == normalized_root_dir for path in existing_paths):
+            return
+
+        # Add the root_dir to PYTHONPATH differently depending on existing value
+        new_path: str = self.root_dir
+        if existing:
+            new_path = existing + os.pathsep + self.root_dir
+        os.environ["PYTHONPATH"] = new_path
+
+    def set_environment_variables(self):
+        """Set required environment variables, optionally using neuro-san defaults."""
+        print("\n" + "=" * 50 + "\n")
+        print("Setting environment variables...\n")
+        # Common env variables
+        self.set_pythonpath()
+        os.environ["AGENT_MANIFEST_FILE"] = self.args["agent_manifest_file"]
+        os.environ["AGENT_TOOL_PATH"] = self.args["agent_tool_path"]
+        self._apply_toolbox_env()
+        os.environ["MCP_SERVERS_INFO_FILE"] = self.args["mcp_servers_info_file"]
+        os.environ["NEURO_SAN_SERVER_CONNECTION"] = self.args["server_connection"]
+        os.environ["AGENT_MANIFEST_UPDATE_PERIOD_SECONDS"] = str(self.args["manifest_update_period_seconds"])
+        os.environ["LOG_LEVEL"] = self.args["log_level"]
+        print(f"PYTHONPATH set to: {os.environ['PYTHONPATH']}")
+        print(f"AGENT_MANIFEST_FILE set to: {os.environ['AGENT_MANIFEST_FILE']}")
+        print(f"AGENT_TOOL_PATH set to: {os.environ['AGENT_TOOL_PATH']}")
+        print(f"MCP_SERVERS_INFO_FILE set to: {os.environ['MCP_SERVERS_INFO_FILE']}")
+        print(f"NEURO_SAN_SERVER_CONNECTION set to: {os.environ['NEURO_SAN_SERVER_CONNECTION']}")
+        print(f"AGENT_MANIFEST_UPDATE_PERIOD_SECONDS set to: {os.environ['AGENT_MANIFEST_UPDATE_PERIOD_SECONDS']}")
+        print(f"LOG_LEVEL set to: {os.environ['LOG_LEVEL']}\n")
+
+        # Client-only env variables
+        if not self.args["server_only"]:
+            os.environ["THINKING_FILE"] = self.args["thinking_file"]
+            os.environ["THINKING_DIR"] = self.args["thinking_dir"]
+            print(f"THINKING_FILE set to: {os.environ['THINKING_FILE']}")
+            print(f"THINKING_DIR set to: {os.environ['THINKING_DIR']}")
+            os.environ["NSFLOW_HOST"] = str(self.args["nsflow_host"])
+            os.environ["NSFLOW_PORT"] = str(self.args["nsflow_port"])
+            os.environ["NSFLOW_PLUGIN_CRUSE"] = str(self.args["nsflow_plugin_cruse"])
+            os.environ["VITE_API_PROTOCOL"] = str(self.args["vite_api_protocol"])
+            os.environ["VITE_WS_PROTOCOL"] = str(self.args["vite_ws_protocol"])
+            print(f"NSFLOW_HOST set to: {os.environ['NSFLOW_HOST']}")
+            print(f"NSFLOW_PORT set to: {os.environ['NSFLOW_PORT']}")
+            print(f"NSFLOW_PLUGIN_CRUSE set to: {os.environ['NSFLOW_PLUGIN_CRUSE']}")
+            print(f"VITE_API_PROTOCOL set to: {os.environ['VITE_API_PROTOCOL']}")
+            print(f"VITE_WS_PROTOCOL set to: {os.environ['VITE_WS_PROTOCOL']}")
+            # Set env variable for using nsflow in client-only mode
+            if self.args["client_only"]:
+                os.environ["NSFLOW_CLIENT_ONLY"] = "True"
+                print(f"NSFLOW_CLIENT_ONLY set to: {os.environ['NSFLOW_CLIENT_ONLY']}")
+
+        # Server-only env variables
+        if not self.args["client_only"]:
+            os.environ["NEURO_SAN_SERVER_HOST"] = self.args["server_host"]
+            os.environ["NEURO_SAN_SERVER_HTTP_PORT"] = str(self.args["server_http_port"])
+
+            print(f"NEURO_SAN_SERVER_HOST set to: {os.environ['NEURO_SAN_SERVER_HOST']}")
+            print(f"NEURO_SAN_SERVER_HTTP_PORT set to: {os.environ['NEURO_SAN_SERVER_HTTP_PORT']}\n")
+
+        print("\n" + "=" * 50 + "\n")
+
+    def start_process(self, command, process_name, log_file):
+        """Start a subprocess and capture logs."""
+        # pylint: disable=consider-using-with
+        if self.is_windows:
+            # On Windows, don't use CREATE_NEW_PROCESS_GROUP to allow Ctrl+C propagation
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+            )
+        else:
+            # On Unix, use start_new_session for proper process group management
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+                start_new_session=True,
+            )
+
+        print(f"Started {process_name} with PID {process.pid}")
+
+        for plugin in self.plugins:
+            plugin.args["process_name"] = process_name
+            plugin.args["process"] = process
+            plugin.args["log_file"] = log_file
+            plugin.post_server_start_action()
+
+        return process
+
+    def start_neuro_san(self):
+        """Start the Neuro SAN server."""
+        print("Starting Neuro SAN server...")
+        command = [
+            sys.executable,
+            "-u",
+            "-m",
+            "neuro_san_studio.runner.neuro_san_server_wrapper",
+            "--http_port",
+            str(self.args["server_http_port"]),
+        ]
+        self.server_process = self.start_process(command, "NeuroSan", "logs/server.log")
+        print("NeuroSan server http started on port: ", self.args["server_http_port"])
+
+    def start_nsflow(self):
+        """Start nsflow client."""
+        print("Starting nsflow client...")
+        command = [
+            sys.executable,
+            "-u",
+            "-m",
+            "uvicorn",
+            "nsflow.backend.main:app",
+            "--host",
+            str(self.args["nsflow_host"]),
+            "--port",
+            str(self.args["nsflow_port"]),
+            "--reload",
+        ]
+
+        self.nsflow_process = self.start_process(command, "nsflow", "logs/nsflow.log")
+        print(f"nsflow client started on {self.args['nsflow_host']}:{self.args['nsflow_port']}")
+
+    # pylint: disable=unused-argument
+    def signal_handler(self, signum, frame):
+        """Handle termination signals to cleanly exit."""
+        print("\nTermination signal received. Stopping all processes...")
+
+        if self.server_process:
+            print(f"\nStopping SERVER (PID {self.server_process.pid})...")
+            if self.is_windows:
+                self.server_process.terminate()
+            else:
+                os.killpg(os.getpgid(self.server_process.pid), signal.SIGTERM)
+            # Wait for the server to finish cleanup (e.g. flushing Langfuse traces)
+            self.server_process.wait(timeout=10)
+
+        if self.nsflow_process:
+            print(f"Stopping NSFLOW (PID {self.nsflow_process.pid})...")
+            if self.is_windows:
+                self.nsflow_process.terminate()
+            else:
+                os.killpg(os.getpgid(self.nsflow_process.pid), signal.SIGKILL)
+
+        for plugin in self.plugins:
+            self._logger.info("Running cleanup for plugin: %s", plugin)
+            plugin.cleanup()
+
+        sys.exit(0)
+
+    def is_port_open(self, host: str, port: int, timeout=1.0) -> bool:
+        """
+        Check if a port is open on a given host.
+        :return: True if the port is open, False otherwise.
+        """
+        # Create a socket and set a timeout
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            try:
+                sock.connect((host, port))
+                return True
+            except (ConnectionRefusedError, TimeoutError, OSError):
+                return False
+
+    def _check_port_conflicts(self) -> Tuple[list[str], list[int]]:
+        """Check if any of the ports are in use."""
+        port_conflicts = []
+        conflicting_ports: list[int] = []
+
+        if not self.args["server_only"] and self.args["nsflow_host"] == "localhost":
+            if self.is_port_open(self.args["nsflow_host"], self.args["nsflow_port"]):
+                port_conflicts.append(f"NSFlow client port {self.args['nsflow_port']} is already in use.")
+                conflicting_ports.append(self.args["nsflow_port"])
+
+        if not self.args["client_only"] and self.args["server_host"] == "localhost":
+            if self.is_port_open(self.args["server_host"], self.args["server_http_port"]):
+                port_conflicts.append(f"Neuro-San server http port {self.args['server_http_port']} is already in use.")
+                conflicting_ports.append(self.args["server_http_port"])
+
+        return port_conflicts, conflicting_ports
+
+    def _kill_processes_on_ports(self, ports: list[int]):
+        """Kill processes using the specified ports."""
+        for port in ports:
+            print(f"Attempting to kill process on port {port}...")
+            try:
+                if self.is_windows:
+                    # Windows: Find and kill process using netstat and taskkill
+                    result = subprocess.run(
+                        ["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, check=True
+                    )
+                    for line in result.stdout.splitlines():
+                        if f":{port}" in line and "LISTENING" in line:
+                            pid = line.strip().split()[-1]
+                            subprocess.run(["taskkill", "/F", "/PID", pid], check=True)
+                            print(f"  Killed process {pid} on port {port}")
+                            break
+                else:
+                    # Unix/Mac: Use lsof to find and kill process
+                    result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
+                    if result.stdout.strip():
+                        pids = result.stdout.strip().split("\n")
+                        for pid in pids:
+                            subprocess.run(["kill", "-9", pid], check=True)
+                            print(f"  Killed process {pid} on port {port}")
+                    else:
+                        print(f"  No process found on port {port}")
+            except subprocess.CalledProcessError as e:
+                print(f"  Failed to kill process on port {port}: {e}")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                print(f"  Error handling port {port}: {e}")
+
+    def _validate_yes_no_input(self, prompt: str, max_attempts: int = 3) -> bool:
+        """Prompt the user for a yes/no answer, validating against a whitelist.
+
+        Returns True for yes/y, False for no/n or after max_attempts invalid
+        responses. Input is stripped and lower-cased before comparison.
+        """
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+
+        valid_yes = {"yes", "y"}
+        valid_no = {"no", "n"}
+        for attempt in range(max_attempts):
+            try:
+                # Default to "" (empty), which is an invalid input that triggers the prompt again
+                # if there are remaining attempts or gives up otherwise with a 'no'.
+                raw = timedinput(prompt, timeout=INPUT_TIMEOUT_SECONDS, default="").strip().lower()
+            except EOFError:
+                print("No input available. Considering the answer is 'no'.")
+                return False
+            except KeyboardInterrupt:
+                print("\nInput interrupted. Considering the answer is 'no'.")
+                return False
+            if raw in valid_yes:
+                return True
+            if raw in valid_no:
+                return False
+            remaining = max_attempts - attempt - 1
+            if remaining > 0:
+                print(f"Invalid input. Please enter 'yes' or 'no'. ({remaining} attempt(s) left)")
+        print("Too many invalid responses. Considering the answer is 'no'.")
+        return False
+
+    def conditional_start_servers(self):
+        """
+        Start neuro-san server and nsflow client based on --client-only and --server-only flags.
+        Exit if any port is in use.
+        """
+        client_only = self.args["client_only"]
+        server_only = self.args["server_only"]
+
+        if client_only and server_only:
+            print("Cannot use --client-only and --server-only together.")
+            sys.exit(1)
+
+        port_conflicts, conflicting_ports = self._check_port_conflicts()
+
+        # Exit early if any conflict is found
+        if port_conflicts:
+            print("\n" + "=" * 50)
+            for msg in port_conflicts:
+                print(msg)
+            print("=" * 50)
+
+            if self._validate_yes_no_input("\nDo you want to kill the processes using these ports? (yes/no): "):
+                self._kill_processes_on_ports(conflicting_ports)
+                print("\nProcesses killed. Continuing with startup...\n")
+            else:
+                print("\nExiting due to port conflicts.\n")
+                sys.exit(1)
+
+        if not server_only:
+            self.start_nsflow()
+            print("nsflow client is now running.")
+
+        if not client_only:
+            self.start_neuro_san()
+            time.sleep(3)
+            print("Neuro-San server is now running.")
+
+    def run(self):
+        """Run the Neuro SAN server and a client."""
+        print("\nInitial Run Config:\n" + "\n".join(f"{key}: {value}" for key, value in self.args.items()) + "\n")
+
+        # Set environment variables
+        self.set_environment_variables()
+
+        for plugin in self.plugins:
+            self._logger.info("Running pre server start action for plugin: %s", plugin)
+            plugin.pre_server_start_action()
+
+        # Ensure logs directory exists
+        os.makedirs("logs", exist_ok=True)
+
+        # Set up signal handling for termination
+        signal.signal(signal.SIGINT, self.signal_handler)  # Handle Ctrl+C
+        if self.is_windows:
+            signal.signal(
+                signal.SIGBREAK,  # pylint: disable=no-member
+                self.signal_handler,
+            )  # Handle Ctrl+Break on Windows
+        else:
+            signal.signal(signal.SIGTERM, self.signal_handler)  # Handle kill command (not available on Windows)
+
+        # Start all relevant processes
+        self.conditional_start_servers()
+
+        # Fallback: if no plugin implements ProcessLoggerInterface, use a simple
+        # logger to drain subprocess pipes and prevent pipe buffer deadlocks.
+        has_process_logger = any(isinstance(p, ProcessLoggerInterface) for p in self.plugins)
+        if not has_process_logger:
+            simple_logger = SimpleProcessLogger()
+            for name, proc in [
+                ("NeuroSan", self.server_process),
+                ("nsflow", self.nsflow_process),
+            ]:
+                if proc is not None:
+                    log_file = os.path.join(self.logs_dir, f"{name.lower()}.log")
+                    simple_logger.attach_process_logger(proc, name, log_file)
+
+        print("\n" + "=" * 50 + "\n")
+        print("All processes now running.")
+        print("Press Ctrl+C to stop any running processes.")
+        print("\n" + "=" * 50 + "\n")
+
+        # Wait on active processes to finish
+        if self.nsflow_process:
+            self.nsflow_process.wait()
+        if self.server_process:
+            self.server_process.wait()

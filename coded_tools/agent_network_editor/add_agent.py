@@ -59,7 +59,7 @@ class AddAgent(CodedTool):
 
         :return:
             In case of successful execution:
-                the agent network definition as a dictionary.
+                a text string confirming successful adding of the agent in the agent network definition.
             otherwise:
                 a text string of an error message in the format:
                 "Error: <error message>"
@@ -82,10 +82,11 @@ class AddAgent(CodedTool):
         network_def[the_agent_name] = {}
         if not is_tool:
             network_def[the_agent_name]["instructions"] = ""
+            network_def[the_agent_name]["description"] = ""
         logger.info("The resulting agent network definition: \n %s", str(network_def))
         sly_data[AGENT_NETWORK_DEFINITION] = network_def
 
         await ProgressHandler.report_progress(args, network_def)
 
-        logger.info(">>>>>>>>>>>>>>>>>>>DONE !!!>>>>>>>>>>>>>>>>>>")
-        return network_def
+        logger.debug(">>>>>>>>>>>>>>>>>>> DONE %s !!!>>>>>>>>>>>>>>>>>>", self.__class__.__name__)
+        return f"Successfully added agent {the_agent_name} to the agent network definition."

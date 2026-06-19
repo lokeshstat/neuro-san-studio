@@ -16,6 +16,7 @@
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import BaseTool
@@ -23,7 +24,15 @@ from neuro_san.interfaces.coded_tool import CodedTool
 from neuro_san.internals.run_context.langchain.mcp.langchain_mcp_adapter import LangChainMcpAdapter
 from neuro_san.internals.run_context.langchain.mcp.mcp_servers_info_restorer import McpServersInfoRestorer
 
+from coded_tools.agent_network_editor.constants import MCP_SERVERS
 from coded_tools.agent_network_editor.sly_data_lock import SlyDataLock
+from neuro_san_studio import mcp as _mcp_pkg
+
+# Path to the mcp_info.hocon shipped inside the neuro_san_studio package.
+# Resolved via the imported package's __file__ so it works both in-repo and
+# after `pip install` on every platform. Mirrors run.py.
+BUNDLED_MCP_INFO_FILE: Path = Path(_mcp_pkg.__file__).parent / "mcp_info.hocon"
+logger = logging.getLogger(__name__)
 
 
 class GetMcpTool(CodedTool):
@@ -31,17 +40,28 @@ class GetMcpTool(CodedTool):
     CodedTool implementation which provides a way to get tool definition from given MCP servers
     """
 
-    # Use deepwiki MCP server as default since it is free and does not require authorization.
-    DEFAULT_MCP_INFO_FILE = os.path.join("mcp", "mcp_info.hocon")
+    # TODO: This duplicates NeuroSanRunner._resolve_mcp_info_file in
+    # neuro_san_studio/commands/run.py. Refactor so run.py calls this method
+    # instead of maintaining its own copy.
+    @staticmethod
+    def get_mcp_info_file() -> str:
+        """Resolve the mcp_info.hocon path at call time.
 
-    def __init__(self):
+        Precedence (mirrors NeuroSanRunner._resolve_mcp_info_file):
+          1. MCP_SERVERS_INFO_FILE env var (used verbatim if non-empty).
+          2. <cwd>/mcp/mcp_info.hocon if it exists (what `init` scaffolds).
+          3. The mcp_info.hocon bundled in the neuro_san_studio package.
         """
-        Constructor
-        """
-        # Initialize a logger
-        self.logger = logging.getLogger(self.__class__.__name__)
+        env_value = os.getenv("MCP_SERVERS_INFO_FILE")
+        if env_value:
+            return env_value
+        scaffolded = Path.cwd() / "mcp" / "mcp_info.hocon"
+        if scaffolded.is_file():
+            return str(scaffolded)
+        return str(BUNDLED_MCP_INFO_FILE)
 
-    async def get_mcp_servers(self, sly_data: dict[str, Any]) -> list[str]:
+    @staticmethod
+    async def get_mcp_servers(sly_data: dict[str, Any]) -> list[str]:
         """
         Read the MCP servers associated with this instance
         either from a cache on sly_data or from a file.
@@ -49,20 +69,15 @@ class GetMcpTool(CodedTool):
         :param sly_data: sly_data possibly containing cached mcp_servers info
         :return: list of MCP servers
         """
-        mcp_servers: list[str] = None
+        mcp_servers: list[str] = []
 
         async with await SlyDataLock.get_lock(sly_data, "mcp_servers_lock"):
             # Try getting from sly_data
-            mcp_servers = sly_data.get("mcp_servers")
-            if mcp_servers is not None:
-                # Exit early
-                return mcp_servers
+            if MCP_SERVERS in sly_data:
+                # Exit early, including when the cached value is an empty list
+                return sly_data.get(MCP_SERVERS)
 
-            # Check for MCP servers info file in env var
-            use_mcp_info_file: str = os.getenv("MCP_SERVERS_INFO_FILE")
-            if not use_mcp_info_file:
-                # Use a default if no value specified
-                use_mcp_info_file = self.DEFAULT_MCP_INFO_FILE
+            use_mcp_info_file: str = GetMcpTool.get_mcp_info_file()
 
             # Try to restore
             mcp_servers_from_file: dict[str, Any] = {}
@@ -70,12 +85,12 @@ class GetMcpTool(CodedTool):
                 restorer = McpServersInfoRestorer()
                 mcp_servers_from_file = await restorer.async_restore(file_reference=use_mcp_info_file)
             except FileNotFoundError:
-                self.logger.warning(
+                logger.warning(
                     "MCP servers info file not found at %s. No MCP Servers will be used.", use_mcp_info_file
                 )
 
             mcp_servers = list(mcp_servers_from_file.keys())
-            sly_data["mcp_servers"] = mcp_servers
+            sly_data[MCP_SERVERS] = mcp_servers
 
         return mcp_servers
 
@@ -110,7 +125,7 @@ class GetMcpTool(CodedTool):
         """
 
         # Get tool list from MCP servers
-        self.logger.info(">>>>>>>>>>>>>>>>>>>Getting Tool Definition from MCP Servers>>>>>>>>>>>>>>>>>>>")
+        logger.info(">>>>>>>>>>>>>>>>>>>Getting Tool Definition from MCP Servers>>>>>>>>>>>>>>>>>>>")
 
         async with await SlyDataLock.get_lock(sly_data, "tool_dict_lock"):
             if "tool_dict" not in sly_data:
@@ -119,9 +134,9 @@ class GetMcpTool(CodedTool):
                 mcp_servers: list[str] = await self.get_mcp_servers(sly_data)
                 for mcp_server in mcp_servers:
                     try:
-                        self.logger.info("MCP Server: %s", mcp_server)
+                        logger.info("MCP Server: %s", mcp_server)
                         tools: list[BaseTool] = await LangChainMcpAdapter().get_mcp_tools(mcp_server)
-                        self.logger.info("Successfully loaded the following tools: %s", str(tools))
+                        logger.info("Successfully loaded the following tools: %s", str(tools))
 
                         # Gather each tool's description into one string.
                         tool_dict[mcp_server] = ""
@@ -130,7 +145,7 @@ class GetMcpTool(CodedTool):
 
                     except ExceptionGroup as exception:
                         error_msg = f"Error: Failed to load tools from {mcp_server}. {str(exception)}"
-                        self.logger.warning(error_msg)
+                        logger.warning(error_msg)
 
                 # Stash a string representation of the tool_dict
                 sly_data["tool_dict"] = str(tool_dict)

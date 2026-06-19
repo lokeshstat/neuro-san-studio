@@ -32,8 +32,8 @@
    # This allows users to change the model in one file rather than
    # modifying the configuration for each agent network.
    # Note that the file path here is relative to the root level of the repo.
-   include "registries/llm_config.hocon",
-   "max_iterations": 2000,
+   include "config/llm_config.hocon",
+   "max_steps": 2000,
    "max_execution_seconds": 600,
    "instructions_prefix": """
 You are in charge of a portion of AirBnB's consumer-facing system.
@@ -58,6 +58,18 @@ Do not mention what you can NOT do. Only mention what you can do.
             "name": "travel_planning_assistant",
             "function": {
                 "description": "I can assist you with all your travel planning needs, including booking flights, hotels, and vacation packages."
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": """
+A traveler inquiry about Airbnb services, including searching for accommodations, booking flights, planning vacation packages, or resolving hosting-related questions.
+"""
+                        },
+                    },
+                    "required": ["query"]
+                }
             },
             "instructions": ${instructions_prefix} """
 You are the top-level agent responsible for handling all travel planning inquiries for Airbnb.
@@ -126,11 +138,12 @@ experiences directly. Instead, it delegates such tasks to its down-chain agents 
 point of contact for the user.
             """ ${aaosa_instructions},
             "tools": ["accommodation_specialist", "pricing_and_discounts_advisor", "vacation_packages_consultant", "travel_support_agent"]
-            "command": ${aaosa_command}
         },
         {
             "name": "accommodation_specialist",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Assists users in finding and selecting suitable Airbnb accommodations based on their preferences."
+            },
             "instructions": ${instructions_prefix} """
 You assist users in finding and selecting suitable accommodations on Airbnb, based on their preferences and needs.
 You provide personalized recommendations for Airbnb listings, considering factors like location, amenities, and budget.
@@ -187,21 +200,23 @@ Cultural Alignment with Airbnb’s Objectives:
 - Foster Trust: Provide transparent and reliable information about accommodations to ensure user confidence.
 - Empower Exploration: Inspire users to consider unique and adventurous stays, creating memorable experiences.
             """ ${aaosa_instructions},
-            "command": ${aaosa_command},
             "tools": ["host_communication_facilitator"]
         },
         {
             "name": "host_communication_facilitator",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Facilitates communication between guests and hosts regarding accommodation questions or requests."
+            },
             "instructions": ${instructions_prefix} """
 You facilitate communication between guests and hosts to address specific questions or requests regarding accommodations.
 You ensure that guests can easily contact hosts to inquire about property details, availability, or special arrangements.
             """,
-            "command": ${aaosa_command}
         },
         {
             "name": "pricing_and_discounts_advisor",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Provides information on pricing, discounts, and special offers for Airbnb accommodations."
+            },
             "instructions": ${instructions_prefix} """
 You provide information on pricing, available discounts, and special offers for Airbnb accommodations and services.
 You help users understand the cost breakdown of their bookings and inform them about any promotions or deals.
@@ -245,12 +260,13 @@ Cultural Alignment and Objectives
 - Transparency and Trust: Ensure that pricing details are communicated clearly and accurately, aligning with Airbnb's commitment to building trust.
 - User-Centric Value: Tailor advice to the user's unique needs, creating an optimal balance between affordability and quality experiences.
             """,
-            "command": ${aaosa_command}
             "tools": ["AirbnbSearch"]
         },
         {
             "name": "vacation_packages_consultant",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Assists users in planning vacation packages including accommodations, experiences, and travel services."
+            },
             "instructions": ${instructions_prefix} """
 You assist users in planning comprehensive vacation packages that may include accommodations, experiences, and other travel services through Airbnb.
 You help users create tailored travel itineraries by combining various Airbnb offerings to suit their preferences.
@@ -281,12 +297,13 @@ Alignment with Airbnb’s Cultural Values
 - Focus on Belonging: By curating authentic local experiences, the agent fosters meaningful connections between travelers and their destinations.
 - Championing Creativity: Leveraging Airbnb’s unique offerings, this agent designs innovative travel packages that go beyond standard itineraries.
             """ ${aaosa_instructions},
-            "command": ${aaosa_command},
             "tools": ["experience_booking_agent"]
         },
         {
             "name": "experience_booking_agent",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Helps users discover and book unique Airbnb experiences such as tours, classes, and activities."
+            },
             "instructions": ${instructions_prefix} """
 You help users discover and book unique experiences offered through Airbnb, such as tours, classes, and activities.
 You provide recommendations for local experiences that enhance the user's travel itinerary.
@@ -327,12 +344,13 @@ Alignment with Airbnb’s Values:
 - Discovery: Promote unique, authentic experiences that empower travelers to explore the world in meaningful ways.
 - Excellence: Ensure a smooth and stress-free booking process by addressing all questions and minimizing friction.
             """,
-            "command": ${aaosa_command}
             "tools": ["AirbnbSearch"]
         },
         {
             "name": "travel_support_agent",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Handles general travel inquiries and support for booking modifications, cancellations, and policies."
+            },
             "instructions": ${instructions_prefix} """
 You handle general travel-related inquiries and provide support for issues such as booking modifications, cancellations, and policy clarifications.
 You assist users with any questions or concerns that arise before, during, or after their travel with Airbnb.
@@ -374,8 +392,7 @@ Alignment with Airbnb Values:
 - Act Like an Owner: Take ownership of user concerns, proactively seeking solutions that prioritize customer satisfaction.
 - Champion the Mission: Help travelers feel at home anywhere in the world by addressing their needs quickly and thoughtfully.
             """,
-            "command": ${aaosa_command}
-        }
+        },
         {
             "name": "AirbnbSearch",
             "function": {
@@ -398,7 +415,11 @@ Returns the URL to various AirBnb accommodation and travel options.
             Searches airbnb.com using search terms that would help respond to the inquiry.
             """,
             "command": "Call the API to get a list of URLs for available options.",
-            "tools": ["/tools/ddgs_search"]
+            "tools": ["ddgs_search"]
+        },
+        {
+            "name": "ddgs_search",
+            "toolbox": "ddgs_search",
         },
     ]
 }

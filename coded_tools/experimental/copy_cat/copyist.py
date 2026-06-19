@@ -1,4 +1,4 @@
-# Copyright © 2023-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ from neuro_san.internals.graph.registry.agent_network import AgentNetwork
 from neuro_san.internals.reservations.reservation_util import ReservationUtil
 
 
+# pylint: disable=too-many-ancestors
 class Copyist(BranchActivation, CodedTool):
     """
     CodedTool implementation of a copyist for the copy_cat reservations example.

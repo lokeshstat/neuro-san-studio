@@ -102,7 +102,7 @@
     # - neuro-san>=0.6.24
     # - GOOGLE_API_KEY
     # - Maps Grounding Lite API enabled in Google Cloud project. See https://developers.google.com/maps/ai/grounding-lite
-    # - Use MCP_SERVERS_INFO_FILE for authentication. See https://github.com/cognizant-ai-lab/neuro-san-studio/blob/main/mcp/mcp_info.hocon and https://github.com/cognizant-ai-lab/neuro-san-studio/blob/main/docs/user_guide.md#authentication
+    # - Use MCP_SERVERS_INFO_FILE for authentication. See ../../neuro_san_studio/mcp/mcp_info.hocon and ../../docs/user_guide.md#authentication
     "tools/google_maps.hocon": false,
 
     # Before turning on and running the following agent network, make sure that:
@@ -128,6 +128,18 @@
     # To use this agent network, start by installing the required package:
     #     pip install pymupdf >= 1.25.5
     "tools/pdf_rag.hocon": false,
+    
+    # File system-backed long-term memory tool (per-agent): CRUD + keyword search.
+    # Supports two backends: JSON or Markdown.
+    # See ``docs/examples/tools/persistent_memory_local.md`` for a usage example.
+    "tools/persistent_memory_local.hocon": true,
+
+    # Cloud-backed long-term memory tool using the Mem0 API; per-user scoping via ``sly_data["user_id"]``.
+    # Requirement to use this Mem0 based agent network:
+    # - pip install mem0ai
+    # - ``MEM0_API_KEY`` environment variable.
+    # Refer to ``docs/examples/tools/persistent_memory_mem0.md`` for a usage example.
+    "tools/persistent_memory_mem0.hocon": false,
 
     # To use this agent network, follow the instructions in ./docs/examples/visual_question_answering.md
     "tools/visual_question_answering.hocon": false,
@@ -138,4 +150,7 @@
 
     # Wikimedia media search
     "tools/wikimedia_search.hocon": true,
+
+    # Requires YDC_API_KEY. See docs/search_tools.md and neuro_san_studio/mcp/mcp_info.hocon for setup.
+    "tools/you_search.hocon": false,
 }

@@ -18,11 +18,23 @@ import logging
 import os
 from typing import Any
 
+from leaf_common.config.config_filter_chain import ConfigFilterChain
 from neuro_san.interfaces.coded_tool import CodedTool
+from neuro_san.internals.graph.persistence.agent_filetree_mapper import AgentFileTreeMapper
+from neuro_san.internals.graph.persistence.manifest_dict_config_filter import ManifestDictConfigFilter
+from neuro_san.internals.graph.persistence.manifest_key_config_filter import ManifestKeyConfigFilter
+from neuro_san.internals.graph.persistence.raw_manifest_restorer import RawManifestRestorer
 from neuro_san.internals.graph.persistence.registry_manifest_restorer import RegistryManifestRestorer
+from neuro_san.internals.graph.persistence.served_manifest_config_filter import ServedManifestConfigFilter
 from neuro_san.internals.graph.registry.agent_network import AgentNetwork
+from pyparsing.exceptions import ParseException
 
+from coded_tools.agent_network_editor.constants import SUBNETWORK_NAMES
+from coded_tools.agent_network_editor.constants import SUBNETWORKS
 from coded_tools.agent_network_editor.sly_data_lock import SlyDataLock
+
+DEFAULT_MANIFEST_FILE = os.path.join("registries", "manifest_and.hocon")
+logger = logging.getLogger(__name__)
 
 
 class GetSubnetwork(CodedTool):
@@ -30,10 +42,147 @@ class GetSubnetwork(CodedTool):
     CodedTool implementation which provides a way to get subnetwork names and descriptions from the manifest file
     """
 
-    DEFAULT_MANIFEST_FILE = os.path.join("registries", "manifest.hocon")
+    @staticmethod
+    async def get_subnetwork_names(sly_data: dict[str, Any]) -> list[str]:
+        """
+        Get the list of subnetwork names. Reads only the manifest HOCON file rather
+        than each individual subnetwork's HOCON, since callers only need names
+        (no descriptions). Results are cached in sly_data.
 
-    # pylint: disable=too-many-locals
-    async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
+        :param sly_data: The sly_data dictionary from the agent hierarchy.
+        :return: List of subnetwork name strings, or empty list if none / on error.
+        """
+        # If the full subnetwork dict was already loaded by get_subnetworks(),
+        # reuse its keys instead of re-reading the manifest.
+        if SUBNETWORKS in sly_data:
+            return list(sly_data[SUBNETWORKS].keys())
+
+        async with await SlyDataLock.get_lock(sly_data, "subnetwork_names_lock"):
+            # Re-check caches after acquiring the lock.
+            if SUBNETWORK_NAMES in sly_data:
+                return sly_data.get(SUBNETWORK_NAMES)
+
+            # We use a designer-specific env var (rather than AGENT_MANIFEST_FILE) so the designer's
+            # subnetwork pool can be a narrow, curated subset of what the server hosts — e.g. only
+            # industry/ + generated/ networks, not basic/, tools/, experimental/, or the
+            # designer-family agents themselves. Default points at manifest_and.hocon which composes
+            # just those two via `include`.
+            manifest_file: str = os.getenv("AGENT_NETWORK_DESIGNER_MANIFEST_FILE") or DEFAULT_MANIFEST_FILE
+
+            logger.info(">>>>>>>>>>>>>>>>>>>Getting Subnetwork Names from Manifest>>>>>>>>>>>>>>>>>>>")
+            logger.info("Manifest file: %s", manifest_file)
+
+            # Parse the manifest HOCON. pyhocon resolves `include` statements, so composed manifests
+            # (e.g. manifest_and.hocon) flatten into a single mapping of
+            # "path/to/file.hocon" -> enabled-bool-or-dict entries. RawManifestRestorer returns None
+            # if the file is missing — treated as an empty manifest (no subnetworks available).
+            names: list[str] = []
+            try:
+                raw_manifest: dict[str, Any] = await RawManifestRestorer().async_restore(file_reference=manifest_file)
+                if raw_manifest is None:
+                    logger.warning(
+                        "Manifest file '%s' not found, no external agents/subnetworks will be available "
+                        "in the generated network",
+                        manifest_file,
+                    )
+                    raw_manifest = {}
+
+                # Use neuro-san's canonical manifest filters so we don't reimplement manifest semantics:
+                #   - ManifestKeyConfigFilter:    strips quote chars from quoted HOCON keys
+                #   - ManifestDictConfigFilter:   normalizes bool values to {"serve": ..., ...}
+                #   - ServedManifestConfigFilter: drops non-served entries
+                # We assemble our own chain rather than using ManifestFilterChain because the latter
+                # registers ServedManifestConfigFilter with warn_on_skip=True/entry_for_skipped=True,
+                # which would log a warning per disabled entry and keep them in the result. Here we
+                # want unserved entries silently dropped.
+                filter_chain = ConfigFilterChain()
+                filter_chain.register(ManifestKeyConfigFilter(manifest_file))
+                filter_chain.register(ManifestDictConfigFilter(manifest_file))
+                filter_chain.register(
+                    ServedManifestConfigFilter(manifest_file, warn_on_skip=False, entry_for_skipped=False)
+                )
+                one_manifest: dict[str, Any] = filter_chain.filter_config(raw_manifest)
+
+                # Derive external network names ("/<network_name>") via the canonical mapper used by
+                # neuro-san (matches RegistryManifestRestorer.find_external_network_names).
+                agent_mapper = AgentFileTreeMapper()
+                for manifest_key in one_manifest.keys():
+                    agent_filepath: str = agent_mapper.agent_name_to_filepath(manifest_key)
+                    network_name: str = agent_mapper.filepath_to_agent_network_name(agent_filepath)
+                    names.append(f"/{network_name}")
+            except ParseException as parse_error:
+                logger.warning(
+                    "Failed to parse manifest '%s', no subnetwork names will be available: %s",
+                    manifest_file,
+                    parse_error,
+                )
+
+            # Cache whatever we found, including an empty list on failure, to avoid reloading.
+            sly_data[SUBNETWORK_NAMES] = names
+
+        return names
+
+    @staticmethod
+    async def get_subnetworks(sly_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Read the subnetwork name -> description mapping
+        either from a cache on sly_data or from the manifest file.
+
+        :param sly_data: sly_data possibly containing cached subnetworks info
+        :return: dict of subnetwork name to description
+        """
+        subnetworks: dict[str, str] = {}
+
+        async with await SlyDataLock.get_lock(sly_data, "subnetworks_lock"):
+            # Try getting from sly_data
+            if SUBNETWORKS in sly_data:
+                # Exit early, including for an explicitly cached empty mapping
+                return sly_data.get(SUBNETWORKS)
+
+            # We use a designer-specific env var (rather than AGENT_MANIFEST_FILE) so the designer's
+            # subnetwork pool can be a narrow, curated subset of what the server hosts — e.g. only
+            # industry/ + generated/ networks, not basic/, tools/, experimental/, or the
+            # designer-family agents themselves. Default points at manifest_and.hocon which composes
+            # just those two via `include`.
+            manifest_file: str = os.getenv("AGENT_NETWORK_DESIGNER_MANIFEST_FILE") or DEFAULT_MANIFEST_FILE
+
+            empty: dict[str, AgentNetwork] = {}
+            networks: dict[str, AgentNetwork] = {}
+            logger.info(">>>>>>>>>>>>>>>>>>>Getting Subnetwork Descriptions from Manifest>>>>>>>>>>>>>>>>>>>")
+            logger.info("Manifest file: %s", str(manifest_file))
+
+            # What is returned is mapping from storage type -> (name -> AgentNetwork mapping)
+            restorer = RegistryManifestRestorer(manifest_file)
+            try:
+                # Note that any hocon includes will be done synchronously
+                networks_by_storage: dict[str, dict[str, AgentNetwork]] = await restorer.async_restore()
+                logger.info("Successfully loaded agent networks info from %s", str(manifest_file))
+
+                # Put all name -> AgentNetwork mappings into a single dictionary,
+                # as is expected by the rest of this tool.
+                for storage_type in ["public", "protected"]:
+                    one_storage_dict: dict[str, AgentNetwork] = networks_by_storage.get(storage_type, empty)
+                    networks.update(one_storage_dict)
+
+                for name, network in networks.items():
+                    front_man: str = network.find_front_man()
+                    desc: str = network.get_agent_tool_spec(front_man).get("function", {}).get("description")
+                    if desc is not None and len(desc) > 0:
+                        subnetworks["/" + name] = desc
+
+            except FileNotFoundError as file_error:
+                logger.warning(
+                    "Manifest file not found, no external agents/subnetworks will be available "
+                    "in the generated network: %s",
+                    file_error,
+                )
+
+            # Cache whatever we found, including an empty mapping on failure, to avoid reloading.
+            sly_data[SUBNETWORKS] = subnetworks
+
+        return subnetworks
+
+    async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:
         """
         :param args: An argument dictionary whose keys are the parameters
                 to the coded tool and whose values are the values passed for them
@@ -59,55 +208,6 @@ class GetSubnetwork(CodedTool):
             In case of successful execution:
                 the names and descriptions as keys and values of a dictionary.
             otherwise:
-                a text string of an error message in the format:
-                "Error: <error message>"
+                an empty dictionary.
         """
-        logger = logging.getLogger(self.__class__.__name__)
-
-        # Check manifest file from env var
-        manifest_file: str | list[str] = os.getenv("AGENT_MANIFEST_FILE")
-        if not manifest_file:
-            # Use a default if no value provided
-            manifest_file = self.DEFAULT_MANIFEST_FILE
-
-        subnetworks: dict[str, str] | str = {}
-        async with await SlyDataLock.get_lock(sly_data, "subnetworks_lock"):
-            # Try getting from sly_data
-            subnetworks = sly_data.get("subnetworks")
-            if subnetworks is not None:
-                # Exit early
-                return subnetworks
-
-            subnetworks = {}
-            empty: dict[str, AgentNetwork] = {}
-            networks: dict[str, AgentNetwork] = {}
-            logger.info(">>>>>>>>>>>>>>>>>>>Getting Subnetwork Descriptions from Manifest>>>>>>>>>>>>>>>>>>>")
-            logger.info("Manifest file: %s", str(manifest_file))
-
-            # What is returned is mapping from storage type -> (name -> AgentNetwork mapping)
-            restorer = RegistryManifestRestorer(manifest_file)
-            try:
-                # Note that any hocon includes will be done synchronously
-                networks_by_storage: dict[str, dict[str, AgentNetwork]] = await restorer.async_restore()
-                logger.info("Successfully loaded agent networks info from %s", str(manifest_file))
-
-                # Put all name -> AgentNetwork mappings into a single dictionary,
-                # as is expected by the rest of this tool.
-                for storage_type in ["public", "protected"]:
-                    one_storage_dict: dict[str, AgentNetwork] = networks_by_storage.get(storage_type, empty)
-                    networks.update(one_storage_dict)
-
-                for name, network in networks.items():
-                    front_man: str = network.find_front_man()
-                    desc: str = network.get_agent_tool_spec(front_man).get("function", {}).get("description")
-                    if desc is not None and len(desc) > 0:
-                        subnetworks["/" + name] = desc
-
-            except FileNotFoundError as not_found_err:
-                subnetworks = f"Error: Failed to load agent networks info from {manifest_file}. {str(not_found_err)}"
-                logger.warning(subnetworks)
-
-            # Cache whatever we found, including an error - no need to do this more than once.
-            sly_data["subnetworks"] = subnetworks
-
-        return subnetworks
+        return await self.get_subnetworks(sly_data)

@@ -18,10 +18,12 @@
     # This allows users to change the model in one file rather than
     # modifying the configuration for each agent network.
     # Note that the file path here is relative to the root level of the repo.
-    include "registries/llm_config.hocon",
-    "max_iterations": 40000,
+    include "config/llm_config.hocon",
+    "max_steps": 40000,
     "max_execution_seconds": 6000,
-    
+    "error_formatter": "json",
+    "error_fragments": ["Error:", "Exception:", "Traceback (most recent call last)"],
+
     "tools": [
         # This first agent definition is regarded as the "Front Man", which
         # does all the talking to the outside world/client.
@@ -63,7 +65,7 @@
                             "description": "Indicates whether to use MCP tools (default: true)"
                         }
                     },
-                    "required": ["agent_network_description", "mode", "toolbox", "subnetwork", "mcp_tool"]
+                    "required": ["agent_network_description", "mode"]
                 }
             },
             "instructions": """
@@ -98,7 +100,8 @@ When adding tools to the network, follow this priority order depending on which 
   - Always call `create_new_network` first.  
   - In the resulting network, mark `is_tool_list[i] = true` only if `agent_names[i]` is a toolbox tool.
 - **Modify mode (`mode=modify`)**  
-  - Always call `get_agent_network` first.
+  - DO NOT call `create_new_network`.
+  - Call tools necessary to make the specified modifications to the existing network. This may include adding new agents, removing agents, or updating relationships between agents.
 
 - **Adding agents**: Use `add_agent_to_network`.  
   - Set `is_tool = true` only if the `agent_name` comes from the toolbox.  
@@ -110,9 +113,6 @@ When adding tools to the network, follow this priority order depending on which 
 - **Removing agents**: Use `remove_agent_from_network`.  
   - Ensure all up-chain and down-chain references to the removed agent are updated.  
   - If the removed agent had down-chain agents, reassign them to a new parent or leave them orphaned only if explicitly intended.
-
-- **Validation**: Call `validate_structure` any time to confirm the network follows rules and constraints.  
-  - **Always call `validate_structure` before final response.**
 
 ### Conceptual model
 Think of this as building or refining a hierarchical organizational chart. Each agent represents a responsible individual or role handling part of the workflow.
@@ -134,28 +134,33 @@ Think of this as building or refining a hierarchical organizational chart. Each 
   (
     "customer_support_rep": (
       "instructions": "",
+      "description": "",
       "tools": ["network_engineer", "account_manager", "project_manager", "https://example.com/mcp"],
     )
   ),
   (
     "network_engineer": (
       "instructions": "",
+      "description": "",
       "tools": ["network_ops_center_specialist", "field_technician"],
     )
   ),
   (
     "field_technician": (
       "instructions": "",
+      "description": "",
     )
   ),
   (
     "network_ops_center_specialist": (
       "instructions": "",
+      "description": "",
     )
   ),
   (
     "account_manager": (
       "instructions": "",
+      "description": "",
       "tools": ["billing_tool", "/banking_ops"],
     )
   ),
@@ -165,19 +170,24 @@ Think of this as building or refining a hierarchical organizational chart. Each 
   (
     "project_manager": (
       "instructions": "",
+      "description": "",
       "tools": ["logistics_coordinator"],
     )
   ),
   (
     "logistics_coordinator": (
       "instructions": "",
+      "description": "",
     )
   )
 ]
+
+**Response format**
+Always respond with "Successfully created/edited the structure of the agent network." when successful.
 """,
             "allow": {
                 "to_upstream": {
-                    "sly_data": ["agent_network_definition", "agent_network_name"]
+                    "sly_data": ["agent_network_definition", "agent_network_name", "mcp_servers", "subnetworks", "toolbox_info"]
                 }
             },
             "tools": [
@@ -185,17 +195,31 @@ Think of this as building or refining a hierarchical organizational chart. Each 
                 "add_agent_to_network",
                 "remove_agent_from_network",
                 "update_agent_in_network",
-                "get_agent_network_definition",
                 "get_mcp_tool",
                 "get_subnetwork",
                 "get_toolbox",
-                "validate_structure"
+            ],
+            # Parse any JSON in responses into the structure field of the ChatMessage.
+            "structure_formats": "json",
+            "middleware": [
+                {
+                    "class": "middleware.agent_network_designer.agent_network_definition_middleware.AgentNetworkDefinitionMiddleware",
+                    "args": {
+                        "sly_data": true
+                    }
+                },
+                {
+                    "class": "middleware.agent_network_designer.validation.agent_network_structure_validation_middleware.AgentNetworkStructureValidationMiddleware",
+                    "args": {
+                        "sly_data": true
+                    }
+                }
             ]
         },
 
         {
             "name": "create_new_network",
-            "class": "create_network.CreateNetwork",
+            "class": "coded_tools.agent_network_editor.create_network.CreateNetwork",
             "function": {
                 "description": "Create a new network",
                 "parameters": {
@@ -225,7 +249,7 @@ Think of this as building or refining a hierarchical organizational chart. Each 
 
         {
             "name": "add_agent_to_network",
-            "class": "add_agent.AddAgent",
+            "class": "coded_tools.agent_network_editor.add_agent.AddAgent",
             "function": {
                 "description": "Adds an agent to an agent network.",
                 "parameters": {
@@ -247,7 +271,7 @@ Think of this as building or refining a hierarchical organizational chart. Each 
 
         {
             "name": "remove_agent_from_network",
-            "class": "remove_agent.RemoveAgent",
+            "class": "coded_tools.agent_network_editor.remove_agent.RemoveAgent",
             "function": {
                 "description": "Removes an agent and all of its edges from the agent network.",
                 "parameters": {
@@ -265,7 +289,7 @@ Think of this as building or refining a hierarchical organizational chart. Each 
 
         {
             "name": "update_agent_in_network",
-            "class": "update_agent.UpdateAgent",
+            "class": "coded_tools.agent_network_editor.update_agent.UpdateAgent",
             "function": {
                 "description": "Updates an existing agent's relationships.",
                 "parameters": {
@@ -287,16 +311,8 @@ Think of this as building or refining a hierarchical organizational chart. Each 
         },
 
         {
-            "name": "get_agent_network_definition",
-            "class": "get_agent_network_definition.GetAgentNetworkDefinition",
-            "function": {
-                "description": "Get the agent network definition."
-            }
-        },
-
-        {
             "name": "get_mcp_tool",
-            "class": "get_mcp_tool.GetMcpTool",
+            "class": "coded_tools.agent_network_editor.get_mcp_tool.GetMcpTool",
             "function": {
                 "description": "Retrieve tools specification from specified MCP servers.",
             }
@@ -304,7 +320,7 @@ Think of this as building or refining a hierarchical organizational chart. Each 
 
         {
             "name": "get_subnetwork",
-            "class": "get_subnetwork.GetSubnetwork",
+            "class": "coded_tools.agent_network_editor.get_subnetwork.GetSubnetwork",
             "function": {
                 "description": "Retrieve the definitions of all subnetworks available in the system.",
             }
@@ -312,17 +328,9 @@ Think of this as building or refining a hierarchical organizational chart. Each 
 
         {
             "name": "get_toolbox",
-            "class": "get_toolbox.GetToolbox",
+            "class": "coded_tools.agent_network_editor.get_toolbox.GetToolbox",
             "function": {
                 "description": "Retrieve the toolbox information from the 'toolbox_info.hocon' file and return it as a dictionary.",
-            }
-        },
-
-        {
-            "name": "validate_structure",
-            "class": "validate_structure.ValidateStructure",
-            "function": {
-                "description": "Validate the structure of the agent network to ensure it adheres to the defined rules and constraints.",
             }
         },
 

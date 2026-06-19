@@ -11,24 +11,20 @@ Simply provide the frontman agent with the name of an organization or a descript
 
 - Generate several example usage queries.
 
-- After that, just restart your server and client to begin using the newly created agent network.
-
 Note that
 
-- This demo writes a file to your local directory and updates your `manifest.hocon`. To disable this behavior,
-set `WRITE_TO_FILE` to `False` in
-[persist_agent_network.py](../../coded_tools/agent_network_designer/persist_agent_network.py)
+- By default, the network is written to disk and your `manifest.hocon` is updated. To use temporary
+in-memory reservations instead, set `AGENT_NETWORK_DESIGNER_USE_RESERVATIONS=true`.
 
-- By default, the parent directory for the generated network (where your `manifest.hocon` should be located)
-is registries. You can change this by setting `OUTPUT_PATH` in
-[file_system_agent_network_persistor.py](../../coded_tools/agent_network_designer/file_system_agent_network_persistor.py)
+- The root output path is derived from the first file listed in the `AGENT_MANIFEST_FILE` environment variable
+(its parent directory). When `AGENT_MANIFEST_FILE` is not set, it falls back to `registries/`.
 
-- All generated agent networks are stored in a `generated` subdirectory under the specified `OUTPUT_PATH`.
+- Within the output path, networks are saved in a subdirectory named `generated` by default.
+Override this with `AGENT_NETWORK_DESIGNER_SUBDIRECTORY`.
 
-- The generated agents are not grounded by default—they only simulate grounded behavior.
-Once you connect the agents to real systems (e.g., APIs or databases) via the `Toolbox` or `MCP`,
-you can disable demo mode by setting DEMO_MODE in
-[persist_agent_network.py](../../coded_tools/agent_network_designer/persist_agent_network.py)
+- Agents run in demo mode by default — they simulate grounded behavior without connecting to real systems.
+Once you wire them to real APIs, databases, or tools via `Toolbox` or `MCP`, disable demo mode by setting
+`AGENT_NETWORK_DESIGNER_DEMO_MODE=false`.
 
 ---
 
@@ -55,7 +51,10 @@ generates or refines the `instructions` for each agent in the network.
 [`agent_network_query_generator`](../../registries/agent_network_query_generator.hocon)
  subnetwork to produce example usage queries for the new agent network.
 
-4. Finally, the [persist_agent_network.py](../../coded_tools/agent_network_designer/persist_agent_network.py) coded tool converts the `agent_network_definition` into a HOCON file and saves it to disk.
+4. Finally, the
+[agent_network_persistence_middleware.py](../../middleware/agent_network_designer/persistence/agent_network_persistence_middleware.py)
+middleware converts the `agent_network_definition` into a HOCON file saving it to disk or creates a temporary network,
+depending on the `AGENT_NETWORK_DESIGNER_USE_RESERVATIONS` environment variable.
 
     The **`agent_network_definition`** is a dictionary mapping agent names to their configurations
 (e.g., instructions, tools, or other agents they can call).
@@ -88,7 +87,7 @@ create a network for UNHCR back-office
 Here is the full agent network definition in HOCON format for the UNHCR back-office:
 
 {
-    include "registries/llm_config.hocon",
+    include "config/llm_config.hocon",
 
     "commondefs": {
         "replacement_strings": {
@@ -111,6 +110,26 @@ When you receive an inquiry, you will:
 4. Once all relevant down-chain agents have responded, either follow up with them to provide requirements or,
    if all requirements have been fulfilled, compile their responses and return the final response.
 You may, in turn, be called by other agents in the system and have to act as a down-chain agent to them.
+5. When responding, format your response based on the 'mode' parameter:
+   - If there is no 'mode' parameter (i.e., the inquiry came directly from a human),
+     respond with a natural, human-readable answer.
+   - If mode is 'Determine', return a json block with the following fields:
+   {
+       "Name": <your name>,
+       "Inquiry": <the inquiry>,
+       "Mode": <Determine | Fulfill>,
+       "Relevant": <Yes | No>,
+       "Strength": <number between 1 and 10 representing how certain you are in your claim>,
+       "Claim:" <All | Partial>,
+       "Requirements" <None | list of requirements>
+   }
+   - If mode is 'Fulfill' or "Follow up", respond to the inquiry and return a json block with the following fields:
+   {
+       "Name": <your name>,
+       "Inquiry": <the inquiry>,
+       "Mode": Fulfill,
+       "Response" <your response>
+   }
             """
         },
         "replacement_values": {
@@ -138,25 +157,6 @@ You may, in turn, be called by other agents in the system and have to act as a d
                     ]
                 }
             },
-            "aaosa_command": """
-If mode is 'Determine', return a json block with the following fields:
-{
-    "Name": <your name>,
-    "Inquiry": <the inquiry>,
-    "Mode": <Determine | Fulfill>,
-    "Relevant": <Yes | No>,
-    "Strength": <number between 1 and 10 representing how certain you are in your claim>,
-    "Claim:" <All | Partial>,
-    "Requirements" <None | list of requirements>
-}
-If mode is 'Fulfill' or "Follow up", respond to the inquiry and return a json block with the following fields:
-{
-    "Name": <your name>,
-    "Inquiry": <the inquiry>,
-    "Mode": Fulfill,
-    "Response" <your response>
-}
-            """
         },
     }
     "tools": [
@@ -184,7 +184,6 @@ You manage financial transactions, budgeting, and reporting for UNHCR. You ensur
 support financial planning and analysis.
 {aaosa_instructions}
             """,
-            "command": "aaosa_command",
             "tools": ["accounting_clerk","financial_analyst"]
         },
         {
@@ -195,7 +194,6 @@ support financial planning and analysis.
 You handle day-to-day financial transactions and record-keeping for UNHCR. You ensure accuracy and compliance in financial
 documentation.
             """,
-            "command": "aaosa_command",
         },
         {
             "name": "financial_analyst",
@@ -205,7 +203,6 @@ documentation.
 You analyze financial data and trends to support decision-making at UNHCR. You provide insights and recommendations for
 financial improvements.
             """,
-            "command": "aaosa_command",
         },
         {
             "name": "recruitment_specialist",
@@ -215,7 +212,6 @@ financial improvements.
 You manage the recruitment process for UNHCR, including job postings, interviews, and candidate selection. You ensure that
 the organization attracts and retains top talent.
             """,
-            "command": "aaosa_command",
         },
         {
             "name": "payroll_specialist",
@@ -225,7 +221,6 @@ the organization attracts and retains top talent.
 You manage payroll processing and employee compensation for UNHCR. You ensure timely and accurate payroll and compliance
 with relevant regulations.
             """,
-            "command": "aaosa_command",
         },
         {
             "name": "supply_chain_coordinator",
@@ -235,7 +230,6 @@ with relevant regulations.
 You coordinate the logistics and supply chain operations for UNHCR. You ensure timely delivery and distribution of goods
 and services to support field operations.
             """,
-            "command": "aaosa_command",
         },
         {
             "name": "contract_specialist",
@@ -245,7 +239,6 @@ and services to support field operations.
 You manage contract development and negotiations for UNHCR. You ensure that contracts meet organizational standards and
 legal requirements.
             """,
-            "command": "aaosa_command",
         },
         {
             "name": "hr_officer",
@@ -256,7 +249,6 @@ You oversee human resources functions including recruitment, employee relations,
 ensure a supportive work environment and manage staff welfare.
 {aaosa_instructions}
             """,
-            "command": "aaosa_command",
             "tools": ["recruitment_specialist","payroll_specialist"]
         },
         {
@@ -268,7 +260,6 @@ You manage the procurement of goods and services for UNHCR. You ensure that proc
 and comply with organizational policies.
 {aaosa_instructions}
             """,
-            "command": "aaosa_command",
             "tools": ["supply_chain_coordinator","contract_specialist"]
         },
     ]
@@ -302,9 +293,8 @@ The frontman agent serves as the primary entry point for all user commands and o
 
 **Available Agents/Tools:**
 - `agent_network_editor` – Subnetwork for creating and modifying `agent_network_definition`
-- `agent_network_query_generator` – Subnetwork for createing sample queries
+- `agent_network_query_generator` – Subnetwork for creating sample queries
 - `agent_network_instructions_editor` – Subnetwork for creating and refining agent instructions
-- `produce_agent_network_hocon` – Generates final HOCON output
 - `get_agent_network_definition` – Retrieves current network state
 - `web_search` – Researches company domains and contexts
 
@@ -328,7 +318,7 @@ The frontman agent serves as the primary entry point for all user commands and o
 
 The system relies on several coded tools:
 
-#### Retrieval & Output Tools
+#### Retrieval Tool
 
 `get_agent_network_definition`
 - Retrieves the current agent network definition from sly data
@@ -338,12 +328,13 @@ by setting the file to `agent_network_hocon_file` sly data or
 specifically given the hocon file name in the user prompt
 - Used for state inspection throughout workflow
 
-`produce_agent_network_hocon`
-- Generates the complete HOCON-formatted configuration file by calling `persist_agent_network`
-- Validates the network definition for correctness and completeness
-- Saves output to local registries directory
-- Updates the local manifest.hocon file
-- Returns errors to the frontman if the network is incomplete or invalid
+#### Persistence (Middleware)
+
+[`AgentNetworkPersistenceMiddleware`](../../middleware/agent_network_designer/persistence/agent_network_persistence_middleware.py)
+- Runs after the agent finishes (no pending tool calls remain)
+- Validates the network definition for structural and instruction errors; re-injects any errors as a human message so the agent can self-correct
+- Converts the `agent_network_definition` to HOCON format and either saves it to the local registries directory (file mode) or registers it as a temporary network (reservations mode)
+- Updates the local `manifest.hocon` file in file mode
 
 ### Research Tool
 
@@ -356,8 +347,8 @@ specifically given the hocon file name in the user prompt
 
 ## Debugging Hints
 
-- Since there are many steps, the agent may time out or hit max iterations before it finishes.
-This can be prevented by setting higher `max_execution_seconds`, `max_iterations`, respectively.
+- Since there are many steps, the agent may time out or hit maximum number of steps before it finishes.
+This can be prevented by setting higher `max_execution_seconds`, `max_steps`, respectively.
 - If the agent stops working mid-process, it is possible that the max token limit has been reached.
 
 ---

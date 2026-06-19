@@ -64,7 +64,7 @@ class CreateNetwork(CodedTool):
 
         :return:
             In case of successful execution:
-                the agent network definition as a dictionary.
+                a text string confirming successful creation of the agent network definition.
             otherwise:
                 a text string of an error message in the format:
                 "Error: <error message>"
@@ -91,6 +91,7 @@ class CreateNetwork(CodedTool):
             sly_data[AGENT_NETWORK_DEFINITION][agent_name] = {}
             if not is_tool_list[i]:
                 sly_data[AGENT_NETWORK_DEFINITION][agent_name]["instructions"] = ""
+                sly_data[AGENT_NETWORK_DEFINITION][agent_name]["description"] = ""
         logger.info("The resulting agent network definition: \n %s", str(sly_data[AGENT_NETWORK_DEFINITION]))
 
         # Put the agent network name in the sly data
@@ -98,5 +99,5 @@ class CreateNetwork(CodedTool):
 
         await ProgressHandler.report_progress(args, sly_data[AGENT_NETWORK_DEFINITION], sly_data[AGENT_NETWORK_NAME])
 
-        logger.info(">>>>>>>>>>>>>>>>>>>DONE !!!>>>>>>>>>>>>>>>>>>")
-        return sly_data[AGENT_NETWORK_DEFINITION]
+        logger.debug(">>>>>>>>>>>>>>>>>>> DONE %s !!!>>>>>>>>>>>>>>>>>>", self.__class__.__name__)
+        return f"Successfully created agent network definition for {agent_network_name}."

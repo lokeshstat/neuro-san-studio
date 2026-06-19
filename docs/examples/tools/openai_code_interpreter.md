@@ -22,9 +22,8 @@ This agent network requires the following setup:
 
 ### Python Dependencies
 
-```bash
-pip install langchain-openai>=0.3.26
-```
+This agent network requires langchain-openai for OpenAI's Responses API integration.
+This is already included with neuro-san-studio, so no need to install anything new.
 
 ### Environment Variables
 
@@ -34,7 +33,7 @@ export OPENAI_API_KEY="your_openai_api_key_here"
 
 For more information on setting up OpenAI tools, see:
 
-- [OpenAI Tools Guide](https://platform.openai.com/docs/guides/tools?api-mode=responses)
+- [OpenAI Tools Guide](https://developers.openai.com/api/docs/guides/tools)
 
 - [LangChain OpenAI Responses API](https://python.langchain.com/docs/integrations/chat/openai/#responses-api)
 
@@ -127,13 +126,11 @@ When developing or debugging the OpenAI Code Interpreter Assistant, keep the fol
 
 - **Tool Registration**: Ensure the `openai_code_interpreter` toolbox is correctly registered and mapped to the OpenAICodeInterpreter coded tool.
 
-- **LangChain Version**: Verify langchain-openai>=0.3.26 is installed for proper tool support.
-
 - **Quota Management**: Monitor API usage and code interpreter quota limits.
 
 ### Common Issues
 
-- **Import Errors**: Ensure langchain-openai>=0.3.26 is installed
+- **Import Errors**: Ensure langchain-openai is installed
 
 - **Authentication Failures**: Verify API key is set and valid
 
@@ -151,16 +148,16 @@ When developing or debugging the OpenAI Code Interpreter Assistant, keep the fol
 
 ## Resources
 
-- [OpenAI Tools Guide](https://platform.openai.com/docs/guides/tools?api-mode=responses)  
+- [OpenAI Tools Guide](https://developers.openai.com/api/docs/guides/tools)  
   Complete guide to OpenAI's built-in tools and their capabilities.
 
-- [OpenAI Code Interpreter Documentation](https://platform.openai.com/docs/guides/code-interpreter)  
+- [OpenAI Code Interpreter Documentation](https://developers.openai.com/api/docs/guides/tools-code-interpreter)  
   Detailed documentation for OpenAI's code interpreter functionality.
 
 - [LangChain OpenAI Responses API](https://python.langchain.com/docs/integrations/chat/openai/#responses-api)  
   Documentation on using OpenAI's Responses API within the LangChain framework.
 
-- [OpenAI API Reference](https://platform.openai.com/docs/api-reference)  
+- [OpenAI API Reference](https://developers.openai.com/docs/api-reference)  
   Complete API reference for OpenAI's services and endpoints.
 
 - [Coded Tools Implementation Guide](https://github.com/cognizant-ai-lab/neuro-san-studio/blob/main/docs/user_guide.md#coded-tools)  

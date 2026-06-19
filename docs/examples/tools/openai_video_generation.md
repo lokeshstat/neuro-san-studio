@@ -31,8 +31,13 @@ This agent network requires the following setup:
 
 ### Python Dependencies
 
+This agent network requires langchain-openai for OpenAI's Responses API integration.
+This is already included with neuro-san-studio, so no need to install it separately.
+
+Additional dependencies for video processing:
+
 ```bash
-pip install langchain-openai>=0.3.26 opencv-python aiohttp
+pip install opencv-python aiohttp
 ```
 
 ### Environment Variables
@@ -43,7 +48,7 @@ export OPENAI_API_KEY="your_openai_api_key_here"
 
 For more information on setting up OpenAI tools, see:
 
-- [OpenAI Video Generation Guide](https://platform.openai.com/docs/guides/video-generation)
+- [OpenAI Video Generation Guide](https://developers.openai.com/api/docs/guides/video-generation)
 
 ---
 
@@ -105,7 +110,7 @@ OpenAI's built-in video generation capabilities.
 "1792x1024"; defaults to "720x1280")
 
 For additional parameters, see
-[OpenAI Video Generation API Reference](https://platform.openai.com/docs/api-reference/videos)
+[OpenAI Video Generation API Reference](https://developers.openai.com/api/reference/resources/videos)
 
 Note: `input_reference` is not currently supported.
 
@@ -161,7 +166,6 @@ When developing or debugging the OpenAI Video Generation Assistant, keep the fol
 - **Video Generation Access**: Confirm your account has access to the video generation tool.
 - **Tool Registration**: Ensure the `openai_video_generation` toolbox is correctly registered and mapped to the
 OpenAIVideoGeneration coded tool.
-- **LangChain Version**: Verify langchain-openai>=0.3.26 is installed for proper integration.
 - **Query Formatting**: Check that user inquiries are properly formatted and passed to the video generation tool.
 - **Browser Access**: Ensure the system can open a web browser to display generated videos.
 - **File Permissions**: If `save_video_file` is enabled, verify write permissions in the target directory.
@@ -174,7 +178,7 @@ videos.
 
 ### Common Issues
 
-- **Import Errors**: Ensure all dependencies (langchain-openai>=0.3.26, opencv-python, aiohttp) are installed
+- **Import Errors**: Ensure langchain-openai, opencv-python and aiohttp are installed
 - **Authentication Failures**: Verify API key is set and valid
 - **Video Generation Access**: Check that your account has video generation permissions
 - **Model Errors**: Confirm the specified model is accessible and supports video generation
@@ -189,13 +193,13 @@ videos.
 
 ## Resources
 
-- [OpenAI Video Generation Guide](https://platform.openai.com/docs/guides/video-generation)
+- [OpenAI Video Generation Guide](https://developers.openai.com/api/docs/guides/video-generation)
   Complete guide to OpenAI's video generation capabilities and best practices.
-- [OpenAI Video API Reference](https://platform.openai.com/docs/api-reference/videos)
+- [OpenAI Video API Reference](https://developers.openai.com/api/reference/resources/videos)
   Detailed specifications and parameters for OpenAI's video generation API.
 - [LangChain OpenAI Integration](https://python.langchain.com/docs/integrations/chat/openai/)
   Documentation on using OpenAI's services within the LangChain framework.
-- [OpenAI API Reference](https://platform.openai.com/docs/api-reference)
+- [OpenAI API Reference](https://developers.openai.com/docs/api-reference)
   Complete API reference for OpenAI's services and endpoints.
 - [Coded Tools Implementation Guide](https://github.com/cognizant-ai-lab/neuro-san-studio/blob/main/docs/user_guide.md#coded-tools)
   Learn how to implement and integrate custom coded tools in Neuro-SAN Studio.

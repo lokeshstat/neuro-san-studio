@@ -30,7 +30,7 @@
     # This allows users to change the model in one file rather than
     # modifying the configuration for each agent network.
     # Note that the file path here is relative to the root level of the repo.
-    include "registries/llm_config.hocon",
+    include "config/llm_config.hocon",
     "instructions_prefix": """
     You are part of a agent_validation_network of assistants.
     You will be given the system prompt of the agent as well as the log of a single interaction.
@@ -84,7 +84,9 @@ Your role is crucial in ensuring the agent network operates optimally, adhering 
         },
         {
             "name": "quality_specialist",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Reviews agent response quality against system prompts and logs."
+            },
             "instructions": ${instructions_prefix} """
 You are responsible for reviewing the quality of the agent's responses based on system prompts and logs.
 Your role is to ensure that responses meet the required standards, aligning with the company's commitment to excellence.
@@ -99,12 +101,13 @@ Your responsibilities include:
 
 Your work ensures that the agent network delivers high-quality interactions, maintaining trust and satisfaction among users.
             """ ${aaosa_instructions},
-            "command": ${aaosa_command},
             "tools": ["quality_assessor"]
         },
         {
             "name": "response_time_analyst",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Analyzes agent response times against performance benchmarks."
+            },
             "instructions": ${instructions_prefix} """
 You analyze the response time of the agent under evaluation, ensuring it meets the required benchmarks. Your focus is on maintaining efficiency and minimizing latency in the agent's performance. Your responsibilities include:
 
@@ -117,12 +120,13 @@ You analyze the response time of the agent under evaluation, ensuring it meets t
 
 Your role ensures the agent network remains efficient and responsive, enhancing the user experience and operational effectiveness.
             """ ${aaosa_instructions},
-            "command": ${aaosa_command},
             "tools": ["time_monitor"]
         },
         {
             "name": "cost_auditor",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Audits operational costs to ensure budgetary compliance."
+            },
             "instructions": ${instructions_prefix} """
 You audit the cost associated with the agent's operations, ensuring that it stays within budgetary constraints. Your goal is to identify and mitigate any financial inefficiencies. Your responsibilities include:
 
@@ -135,12 +139,13 @@ You audit the cost associated with the agent's operations, ensuring that it stay
 
 Your work ensures the agent network operates within its financial means, supporting sustainability and profitability.
             """ ${aaosa_instructions},
-            "command": ${aaosa_command},
             "tools": ["budget_tracker"]
         },
         {
             "name": "success_evaluator",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Evaluates agent interaction success rates and performance metrics."
+            },
             "instructions": ${instructions_prefix} """
 You evaluate the success rate of the agent's interactions, ensuring that the agent meets the desired outcomes and performance metrics. Your focus is on achieving high success rates and client satisfaction. Your responsibilities include:
 
@@ -153,12 +158,13 @@ You evaluate the success rate of the agent's interactions, ensuring that the age
 
 Your role ensures the agent network achieves its performance goals, delivering value and satisfaction to users.
             """ ${aaosa_instructions},
-            "command": ${aaosa_command},
             "tools": ["performance_analyst"]
         },
         {
             "name": "responsible_ai_officer",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Ensures agent operations comply with responsible AI and ethical standards."
+            },
             "instructions": ${instructions_prefix} """
 You ensure that the agent operates within the guidelines of responsible AI, adhering to ethical standards and compliance requirements. Your role is crucial in promoting ethical AI practices. Your responsibilities include:
 
@@ -171,12 +177,13 @@ You ensure that the agent operates within the guidelines of responsible AI, adhe
 
 Your work ensures the agent network operates responsibly, maintaining public trust and aligning with ethical values.
             """ ${aaosa_instructions},
-            "command": ${aaosa_command},
             "tools": ["compliance_monitor"]
         },
         {
             "name": "quality_assessor",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Conducts detailed assessments of quality findings for accuracy and completeness."
+            },
             "instructions": ${instructions_prefix} """
 You conduct detailed assessments of the quality specialist's findings, ensuring thorough evaluation and accuracy in quality reviews. Your role supports the maintenance of high-quality standards. Your responsibilities include:
 
@@ -189,11 +196,12 @@ You conduct detailed assessments of the quality specialist's findings, ensuring 
 
 Your work supports the agent network's commitment to delivering top-quality interactions and maintaining user trust.
             """,
-            "command": ${aaosa_command},
         },
         {
             "name": "time_monitor",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Monitors and records response times for real-time performance tracking."
+            },
             "instructions": ${instructions_prefix} """
 You continuously monitor the response times recorded by the response time analyst, ensuring real-time tracking and timely reporting. Your focus is on maintaining performance efficiency. Your responsibilities include:
 
@@ -206,11 +214,12 @@ You continuously monitor the response times recorded by the response time analys
 
 Your role ensures the agent network remains agile and responsive, enhancing user satisfaction and system performance.
             """,
-            "command": ${aaosa_command},
         },
         {
             "name": "budget_tracker",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Tracks and reports financial data to ensure accurate cost logging."
+            },
             "instructions": ${instructions_prefix} """
 You track the financial reports generated by the cost auditor, ensuring that all costs are accurately logged and reported. Your role is essential in maintaining financial transparency. Your responsibilities include:
 
@@ -223,11 +232,12 @@ You track the financial reports generated by the cost auditor, ensuring that all
 
 Your work supports the agent network's financial integrity, contributing to sustainable financial management.
             """,
-            "command": ${aaosa_command},
         },
         {
             "name": "performance_analyst",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Analyzes interaction performance data to identify success factors and trends."
+            },
             "instructions": ${instructions_prefix} """
 You analyze performance data to support the success evaluator's assessment, ensuring detailed insights into interaction success rates. Your role focuses on enhancing performance outcomes. Your responsibilities include:
 
@@ -240,11 +250,12 @@ You analyze performance data to support the success evaluator's assessment, ensu
 
 Your role ensures the agent network achieves optimal performance, driving success and user satisfaction.
             """,
-            "command": ${aaosa_command},
         },
         {
             "name": "compliance_monitor",
-            "function": ${aaosa_call},
+            "function": ${aaosa_call}{
+                "description": "Monitors compliance reports to verify adherence to ethical and legal standards."
+            },
             "instructions": ${instructions_prefix} """
 You monitor compliance reports generated by the responsible AI officer, ensuring adherence to ethical and legal standards. Your focus is on upholding high compliance standards. Your responsibilities include:
 
@@ -257,7 +268,6 @@ You monitor compliance reports generated by the responsible AI officer, ensuring
 
 Your work ensures the agent network operates responsibly, enhancing trust and aligning with ethical and legal expectations.
             """,
-            "command": ${aaosa_command},
         },
     ]
 }

@@ -1,0 +1,89 @@
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+"""
+Wrapper module that initializes plugins before starting the server.
+
+This module ensures that plugins are initialized in the same Python process as the Neuro SAN server,
+allowing, for instance, proper tracing and observability.
+"""
+
+import asyncio
+import logging
+import os
+import signal
+import sys
+
+# Force the selector event loop on Windows. The default ProactorEventLoop on
+# Python 3.8+/Windows can silently stall the in-process sub-network streaming
+# used when agent_network_designer invokes /agent_network_editor via
+# AsyncDirectAgentSession - the producer task hands chat messages to a
+# consumer via an asyncio queue, and that handoff never connects under
+# Proactor, so the editor never returns its first tool call.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# pylint: disable=wrong-import-position
+from neuro_san.service.main_loop.server_main_loop import ServerMainLoop  # noqa: E402
+
+from neuro_san_studio.plugins.plugin_loader import PluginLoader  # noqa: E402
+
+
+class NeuroSanServerWrapper:  # pylint: disable=too-few-public-methods
+    """Wrapper that initializes plugins before starting the Neuro SAN server."""
+
+    def __init__(self):
+        """Initialize the plugins."""
+        self._logger = logging.getLogger(self.__class__.__name__)
+        self.root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+        if self.root_dir not in sys.path:
+            sys.path.insert(0, self.root_dir)
+
+        plugins_file = PluginLoader.resolve_plugins_file(self.root_dir)
+        self.plugin_classes = PluginLoader.load_plugin_classes(plugins_file)
+
+        # Instantiate plugins now that args are fully built
+        self.args = {}  # Placeholder for any args you want to pass to plugins
+        self.plugins = [cls(self.args) for cls in self.plugin_classes]
+        for plugin in self.plugins:
+            self._logger.info("Loaded plugin: %s", plugin)
+
+    def run(self):
+        """Initialize Phoenix and Langfuse and run the server main loop."""
+        for plugin in self.plugins:
+            self._logger.info("Initializing plugin: %s", plugin)
+            plugin.initialize()
+
+        # Import and run the actual server main loop
+        # Note: ServerMainLoop will parse sys.argv itself, so all command-line
+        # arguments (--port, --http_port, etc.) are automatically passed through
+        # Convert SIGTERM into SystemExit so Python unwinds through
+        # the finally block below, allowing plugins to flush traces.
+        # Tornado does not install a SIGTERM handler, so the default
+        # action would terminate the process immediately.
+        signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+
+        try:
+            ServerMainLoop().main_loop()
+        finally:
+            for plugin in self.plugins:
+                self._logger.info("Cleaning up plugin: %s", plugin)
+                plugin.cleanup()
+
+
+if __name__ == "__main__":
+    wrapper = NeuroSanServerWrapper()
+    wrapper.run()
