@@ -207,3 +207,6 @@ memory/
 
 # test local only
 registries/manifest.hocon.test
+
+# Generated data files for underwriting networks (regenerated locally)
+coded_tools/generated/**/*.json
